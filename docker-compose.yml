@@ -1,0 +1,23 @@
+services:
+  wiki-graph:
+    build: .
+    container_name: wiki-graph
+    restart: unless-stopped
+    ports:
+      - "5006:5006"
+    volumes:
+      - ./data:/app/data:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5006/')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    labels:
+      # Traefik v3 reverse proxy labels
+      - "traefik.enable=true"
+      - "traefik.http.routers.wiki-graph.rule=Host(`wiki.${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.wiki-graph.entrypoints=websecure"
+      - "traefik.http.routers.wiki-graph.tls.certresolver=letsencrypt"
+      - "traefik.http.services.wiki-graph.loadbalancer.server.port=5006"
+

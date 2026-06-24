@@ -1,0 +1,27 @@
+# RAPIDS (install via mamba, NOT pip):
+#   mamba create -n rapids-env -c rapidsai -c conda-forge -c nvidia rapids=24.04 python=3.11 cuda-version=12.2 -y
+#   mamba activate rapids-env
+
+# CPU graph engine (C backend, handles massive graphs)
+igraph
+
+# Data I/O
+pandas
+pyarrow
+numpy
+scipy
+pyyaml
+
+# Progress bars
+tqdm
+
+# Visualization
+datashader
+holoviews
+bokeh
+colorcet
+panel
+Pillow
+
+# LLM cluster naming (optional)
+google-genai

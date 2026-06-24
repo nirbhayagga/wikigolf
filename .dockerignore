@@ -1,0 +1,30 @@
+# Massive data files
+data/
+*.xml
+*.bz2
+*.csv
+*.parquet
+
+# Rust build artifacts
+target/
+Cargo.lock
+
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Gemini notes
+*.md
+!README.md

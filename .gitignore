@@ -1,0 +1,27 @@
+# Rust artifacts
+/target/
+
+# Python artifacts
+__pycache__/
+*.pyc
+.env
+*rapids-env*
+
+# Massive Data Files (Do NOT commit these)
+/data/
+*.xml
+*.bz2
+*.csv
+*.parquet
+*.json
+
+# CUDA logs
+cufile.log
+
+# IDE
+.vscode/
+.idea/
+
+# Documentation
+*.md
+!README.md
