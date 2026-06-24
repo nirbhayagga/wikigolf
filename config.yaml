@@ -1,0 +1,35 @@
+# Wikipedia Graph Pipeline Configuration
+# Edit these values to tune the pipeline without modifying code.
+
+pipeline:
+  sample_ratio: 1.0       # 1.0 = full dataset, 0.01 = 1% for dev iteration
+  data_dir: "data"
+
+gpu:
+  store_transposed: true   # Optimizes PageRank performance
+
+layout:
+  backend: "auto"          # "auto" (try GPU, fallback CPU), "gpu", or "cpu"
+  algorithm: "fa2"         # GPU: "fa2" (ForceAtlas2). CPU fallback: "drl" or "fr"
+  max_iter: 500            # ForceAtlas2 iterations (GPU only)
+  lin_log: false           # true = tighter clusters in FA2
+  cpu_edge_sample: 1.0      # 1.0 = all edges, 0.15 = 15% for faster CPU layout
+
+community:
+  algorithm: "leiden"
+  objective: "modularity"  # "modularity" or "CPM"
+  top_n: 20                # Number of top communities to label
+
+gemini:
+  model: "gemini-2.5-flash"
+  rate_limit_sleep: 5      # Seconds between API calls (15 RPM free tier)
+
+visualization:
+  width: 1200
+  height: 800
+  bgcolor: "black"
+  title: "The Map of Wikipedia"
+
+export:
+  width: 4096
+  height: 2160

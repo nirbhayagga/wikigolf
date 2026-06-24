@@ -1,0 +1,10 @@
+[package]
+name = "wiki-parser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+quick-xml = "0.31"
+regex = "1.10"
+lazy_static = "1.4"
+mimalloc = { version = "0.1", default-features = false }
