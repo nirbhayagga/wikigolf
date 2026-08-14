@@ -1,35 +1,64 @@
 # Wikipedia Graph Pipeline Configuration
-# Edit these values to tune the pipeline without modifying code.
+# Tune the pipeline without modifying code.
+#
+# The graph itself is built by the Rust parser, which has its own flags
+# (--strip-templates, --strip-refs, --keep-citation-sections). What counts as
+# a link is decided there, not here.
 
 pipeline:
-  sample_ratio: 1.0       # 1.0 = full dataset, 0.01 = 1% for dev iteration
-  data_dir: "data"
+  sample_ratio: 1.0       # 1.0 = all edges. Sampling disconnects the graph and
+                          # is only useful as a smoke test — to validate layout
+                          # or communities, run the whole pipeline on
+                          # Simple English Wikipedia instead.
+  data_dir: "data"          # point at data/simple to work on Simple English
 
 gpu:
-  store_transposed: true   # Optimizes PageRank performance
+  store_transposed: true   # optimizes PageRank
 
 layout:
-  backend: "auto"          # "auto" (try GPU, fallback CPU), "gpu", or "cpu"
-  algorithm: "fa2"         # GPU: "fa2" (ForceAtlas2). CPU fallback: "drl" or "fr"
+  backend: "auto"          # "auto" (GPU, fall back to CPU), "gpu", or "cpu"
+  algorithm: "fa2"         # GPU: "fa2". CPU fallback: "drl" or "fr"
   max_iter: 500            # ForceAtlas2 iterations (GPU only)
   lin_log: false           # true = tighter clusters in FA2
-  cpu_edge_sample: 1.0      # 1.0 = all edges, 0.15 = 15% for faster CPU layout
+  cpu_method: "coarsened"  # CPU fallback only. "coarsened" lays out the
+                           # community meta-graph and places articles around
+                           # their community centre — seconds instead of hours.
+                           # "drl"/"fr" force a direct layout on the full
+                           # graph; only viable on small graphs.
 
 community:
-  algorithm: "leiden"
   objective: "modularity"  # "modularity" or "CPM"
-  top_n: 20                # Number of top communities to label
+  resolution: 1.0          # higher = more, smaller communities. The map's
+                           # granularity dial, on both the GPU and CPU paths.
+                           # Measured on Simple English (283,997 articles):
+                           #   res  communities>=1000  largest  top-24 coverage
+                           #   1.0        22            14.4%        99.5%
+                           #   2.0        39             8.3%        86.0%
+                           #   4.0        70             5.9%        60.2%
+                           #   8.0        95             5.1%        42.2%
+                           # Raising this REQUIRES raising max_categories below,
+                           # or the excess communities all render as "Other".
+                           # Community count also grows with graph size, so
+                           # re-measure on enwiki rather than reusing these.
+  top_n: 20                # communities to send to the LLM for labelling
 
 gemini:
   model: "gemini-2.5-flash"
-  rate_limit_sleep: 5      # Seconds between API calls (15 RPM free tier)
+  rate_limit_sleep: 5      # seconds between calls (15 RPM free tier)
 
 visualization:
   width: 1200
   height: 800
   bgcolor: "black"
   title: "The Map of Wikipedia"
+  max_categories: 24       # Datashader's count_cat allocates one aggregate
+                           # plane per category: width * height * categories * 4
+                           # bytes. At 1200x800 that is ~3.8 MB each, so 24 is
+                           # ~92 MB. Everything past this folds into "Other".
 
 export:
   width: 4096
   height: 2160
+  max_categories: 24       # At 4096x2160 each category costs ~35 MB:
+                           #   24 -> 0.85 GB    48 -> 1.7 GB    96 -> 3.4 GB
+                           # Raise together with community.resolution.

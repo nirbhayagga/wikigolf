@@ -1,59 +1,91 @@
 """
-02_video_stats.py — Orphans, Dead Ends, and Dead-End Orphans
-Uses PyArrow C++ for memory-efficient edge scanning.
+02_video_stats.py — Graph topology statistics.
+
+Orphans, dead ends, and fully isolated articles, computed from the integer
+edge list with numpy bincounts.
+
+These numbers are only meaningful because the parser drops red links. When
+link targets that name no article were kept as nodes, every red link counted
+as a "dead end", so that statistic measured nothing but the parser's own
+sloppiness.
 """
 
+import argparse
+import os
+import sys
 import time
+
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
-import pyarrow.compute as pc
-from tqdm import tqdm
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import Paths, load_config  # noqa: E402
 
 
 def main():
+    ap = argparse.ArgumentParser(description="Graph topology statistics")
+    ap.add_argument("--data-dir", default=None, help="override pipeline.data_dir")
+    args = ap.parse_args()
+
     t0 = time.time()
-    print("Analyzing Graph Topology...\n")
+    cfg = load_config()
+    paths = Paths(args.data_dir or cfg["pipeline"]["data_dir"])
 
-    with tqdm(total=5, desc="Overall", unit="step") as overall:
-        nodes_df = pd.read_parquet("data/nodes.parquet")
-        print(f"Total articles: {len(nodes_df):,}")
-        overall.update(1)
+    if not os.path.exists(paths.nodes):
+        raise SystemExit(
+            f"{paths.nodes} not found. Run: python python/01_graph_compute.py"
+        )
 
-        # Warn if data looks sampled (edges much fewer than expected for node count)
-        edge_count = pq.read_metadata("data/edges.parquet").num_rows
-        ratio = edge_count / max(len(nodes_df), 1)
-        if ratio < 5.0 and len(nodes_df) > 100_000:
-            print("   ⚠ WARNING: edges.parquet appears to be from a sampled run.")
-            print(f"   Edge/node ratio = {ratio:.1f} (expected ~50 for full Wikipedia).")
-            print("   Dead-end / orphan analysis may be inaccurate.\n")
+    nodes = pd.read_parquet(paths.nodes)
+    n = len(nodes)
+    print(f"Total articles: {n:,}\n")
 
-        # Orphans: zero inbound links
-        orphans = nodes_df[nodes_df['degree'] == 0]
-        print(f"  Orphans (no inbound links):          {len(orphans):>10,}")
-        overall.update(1)
+    tbl = pq.read_table(paths.edges, columns=["src", "dst"])
+    src = tbl.column("src").to_numpy()
+    dst = tbl.column("dst").to_numpy()
+    del tbl
 
-        # Dead Ends: never appear as Source
-        print("Scanning edge list for unique sources (PyArrow C++)...")
-        arrow_table = pq.read_table("data/edges.parquet", columns=['Source'])
-        sources = set(pc.unique(arrow_table['Source']).to_pylist())
-        overall.update(1)
+    outdeg = np.bincount(src, minlength=n)
+    indeg = np.bincount(dst, minlength=n)
 
-        all_vertices = set(nodes_df['vertex'].unique())
-        dead_ends = all_vertices - sources
-        print(f"  Dead Ends (no outbound links):       {len(dead_ends):>10,}")
+    orphans = indeg == 0
+    dead_ends = outdeg == 0
+    isolated = orphans & dead_ends
 
-        dead_end_orphans = set(orphans['vertex']).intersection(dead_ends)
-        print(f"  Dead-End Orphans (fully isolated):   {len(dead_end_orphans):>10,}")
-        overall.update(1)
+    def line(label, mask):
+        c = int(mask.sum())
+        print(f"  {label:<36} {c:>10,}  ({100 * c / n:5.2f}%)")
 
-        # Top orphans
-        print(f"\nTop orphans by PageRank:")
-        for _, row in orphans.nlargest(10, 'pagerank').iterrows():
-            print(f"   {row['vertex']:50s} PR={row['pagerank']:.2e}")
-        overall.update(1)
+    print(f"  {'Edges':<36} {len(src):>10,}")
+    print(f"  {'Average out-degree':<36} {len(src) / n:>10.1f}")
+    line("Orphans (no inbound links)", orphans)
+    line("Dead ends (no outbound links)", dead_ends)
+    line("Fully isolated (neither)", isolated)
 
-    secs = time.time() - t0
-    print(f"\nCompleted in {secs:.1f}s")
+    # Reciprocity: how often A->B is matched by B->A.
+    key = (src.astype(np.int64) << 32) | dst.astype(np.int64)
+    rev = (dst.astype(np.int64) << 32) | src.astype(np.int64)
+    mutual = np.isin(rev, key, assume_unique=False).sum()
+    print(f"  {'Reciprocated links':<36} {mutual:>10,}  ({100 * mutual / len(src):5.2f}%)")
+
+    # Orphans cannot be ranked by PageRank: with no inbound links their score
+    # is exactly the teleport constant (1-alpha)/n for every one of them, so
+    # "top orphans by PageRank" is an arbitrary tie-break over identical
+    # values. Out-degree is the meaningful ranking — these are articles that
+    # reference the encyclopedia heavily while nothing references them back.
+    nodes = nodes.assign(out_degree=outdeg)
+    print("\nTop orphans by out-degree (link out heavily, nobody links back):")
+    orphan_nodes = nodes[orphans].nlargest(10, "out_degree")
+    for _, r in orphan_nodes.iterrows():
+        print(f"   {r['vertex'][:52]:<52} out={int(r['out_degree']):,}")
+
+    print("\nTop dead ends by PageRank (link to nobody, yet important):")
+    dead_nodes = nodes[dead_ends].nlargest(10, "pagerank")
+    for _, r in dead_nodes.iterrows():
+        print(f"   {r['vertex'][:52]:<52} PR={r['pagerank']:.2e}")
+
+    print(f"\nCompleted in {time.time() - t0:.1f}s")
 
 
 if __name__ == "__main__":

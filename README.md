@@ -1,147 +1,236 @@
 # Wikipedia Graph Pipeline
 
-A high-performance, GPU-accelerated pipeline to parse, compute, and visualize the entire English Wikipedia network (~6.3 million articles, ~300 million links).
+Parse, compute, and visualize the English Wikipedia link network — a Rust two-pass
+parser that resolves article identity, then a GPU-accelerated Python pipeline that
+computes PageRank, communities, and a force-directed layout.
 
 ## Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│   Rust Parser    │────▶│  Phase 0 (CPU)   │────▶│  Phase 1 (GPU)   │
-│ SAX + mimalloc   │     │ CSV → int map,   │     │ PageRank, InDeg  │
-│ XML → edges.csv  │     │ dedup, parquet    │     │ Directed graph   │
-└─────────────────┘     └──────────────────┘     └──────────────────┘
-                                                         │
-                              ┌───────────────────────────┘
-                              ▼
-┌─────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│  Phase 2 (GPU)   │────▶│  Gemini API      │────▶│  Datashader +    │
-│ ForceAtlas2,     │     │ Semantic labels  │     │  Panel web app   │
-│ Leiden community │     └──────────────────┘     └──────────────────┘
-└─────────────────┘                                      │
-                              ┌───────────────────────────┘
-                              ▼
-                        ┌──────────────────┐
-                        │  Docker / Traefik│
-                        │  Self-hosted     │
-                        └──────────────────┘
+enwiki-*-pages-articles-multistream.xml.bz2   (~27 GB)
+        │
+        │  wiki-parser  — pass 1: titles + redirect resolution
+        │                 pass 2: normalize, resolve, drop red links
+        ▼
+   titles.parquet  ·  redirects.parquet  ·  edges.parquet     (int32)
+        │
+        │  01_graph_compute.py
+        │    Phase 1  PageRank + in-degree      (directed)
+        │    Phase 2  ForceAtlas2 + Leiden      (undirected)
+        │    Phase 3  merge + attach titles
+        ▼
+   nodes.parquet
+        │
+        ├──▶ 02_video_stats.py     orphans, dead ends, reciprocity
+        ├──▶ 03_name_clusters.py   LLM community labels
+        ├──▶ 04_app.py             Panel + Datashader viewer
+        ├──▶ 05_export_png.py      high-resolution PNG
+        └──▶ 06_community_stats.py per-community JSON
 ```
 
-### How It Works
+### The parser decides what the graph means
 
-1. **Rust SAX Parser:** Streams compressed XML directly through memory. Uses `mimalloc` to prevent fragmentation.
-2. **PyArrow I/O:** C++ multithreaded CSV ingestion (5x faster than Pandas).
-3. **Phase 1 — GPU Directed Metrics (RAPIDS):** PageRank + In-Degree on the directed graph. Uses Arrow bridge to bypass Numba driver bugs.
-4. **Phase 2 — GPU Layout + Communities (RAPIDS):**
-   - **Pre-symmetrization on CPU:** Directed edges are converted to undirected (both directions + dedup) using 128GB system RAM. This avoids cuGraph's internal symmetrization which exceeds 16GB VRAM.
-   - **ForceAtlas2 layout (GPU):** Barnes-Hut approximation on the pre-symmetrized graph. Minutes instead of hours.
-   - **Leiden communities (GPU):** Community detection on the same undirected graph.
-   - **CPU fallback:** If GPU is unavailable, falls back to igraph DRL + Leiden (C backend).
-5. **LLM Naming (Gemini):** Auto-labels top communities based on PageRank leaders.
-6. **Interactive Viewer:** Panel + Datashader slippy map with search, hover tooltips, and community legend.
-7. **Static Export:** High-res 4K PNG rendering via Datashader.
+Most of the difficulty in this project is not computation, it is **article identity**.
+A naive parser emits link *strings*; this one emits article *ids*. It:
 
-### Directed vs Undirected
+- reads the authoritative `<ns>` element instead of guessing namespaces from colons
+  (so `Star Trek: The Next Generation` survives as an article),
+- applies MediaWiki's title rules — underscores→spaces, whitespace collapse,
+  `#anchor` stripping, first-letter capitalization,
+- resolves redirect chains, so `USA` and `United States` are one node,
+- and **drops red links**: a target naming no real article is not a node.
 
-The pipeline uses **both** graph types where each is appropriate:
+On Simple English Wikipedia that discards **half of all raw links** as noise:
 
-| Phase | Graph Type | Why |
-|-------|-----------|-----|
-| **PageRank + In-Degree** | Directed | Directionality matters — "who links to whom" determines importance |
-| **FA2 Layout** | Undirected | Force-directed physics needs symmetric attraction — "who is connected" |
-| **Leiden Communities** | Undirected | Community structure is about mutual connectivity, not link direction |
+```
+raw links seen     7,955,308
+  red links        2,379,245  (29.9%)
+  duplicates       1,244,725  (15.6%)   case variants, redirect collapsing
+  namespace          385,551   (4.8%)
+edges              3,940,103
+```
 
-## Prerequisites
-* **Parse Stage:** `pbzip2`, Rust toolchain
-* **GPU Stage:** NVIDIA GPU (16GB+ VRAM), RAPIDS (`cugraph`, `cudf`), 128GB+ system RAM
-* **CPU Fallback:** `igraph` (pip install, uses C backend)
-* **Viz Stage:** Panel, Datashader, Bokeh
+Skipping this is why an earlier version of this pipeline produced 28M "vertices"
+for a ~7M article encyclopedia, and then ran out of VRAM trying to lay them out.
 
-## Quick Start
+### Directed vs undirected
+
+| Phase | Graph | Why |
+|-------|-------|-----|
+| PageRank, in-degree | Directed | Link direction is what makes an article important |
+| ForceAtlas2 layout | Undirected | Force-directed physics needs symmetric attraction |
+| Leiden communities | Undirected | Community structure is mutual connectivity |
+
+## Getting the dump
+
+Use the **multistream** file and a **dated** directory rather than `latest`, so
+your numbers stay reproducible.
 
 ```bash
-# 1. Parse Wikipedia XML → edges.csv
-cargo build --release
-pbzip2 -dc enwiki-latest-pages-articles.xml.bz2 | ./target/release/wiki-parser > data/edges.csv
+mkdir -p data/dumps && cd data/dumps
+wget -c https://dumps.wikimedia.org/enwiki/20260801/enwiki-20260801-pages-articles-multistream.xml.bz2
+sha1sum -c <<< "dd27f408e60d3bc864d42547fb0a0d7408249c13  enwiki-20260801-pages-articles-multistream.xml.bz2"
+```
 
-# 2. Set up environment
-mamba create -n rapids-env -c rapidsai -c conda-forge -c nvidia rapids=24.04 python=3.11 cuda-version=12.2 -y
+**Multistream is not just a convenience.** It is a concatenation of independent
+bz2 streams, so a parallel decompressor can split it across cores. Measured on
+this dump:
+
+| | throughput |
+|---|---|
+| `pbzip2` on multistream | **58.9 MB/s** |
+| `bzip2`, single stream | 24.3 MB/s |
+
+Decompression is the parser's bottleneck, so this is a 2.4× difference in
+wall-clock time on a multi-hour job.
+
+> **`pbzip2` segfaults partway through the full enwiki multistream dump**
+> (observed at ~4.2M pages, on a file whose sha1 matches the published
+> checksum). `pbzip2` only fully supports files it compressed itself.
+> Prefer **`lbzip2`**, which handles arbitrary multi-stream bz2 in parallel,
+> and fall back to plain `bzip2` — slower, but correct:
+>
+> ```bash
+> ./target/release/wiki-parser <dump>.xml.bz2 --out data --decompressor bzip2
+> ```
+>
+> The parser treats a non-zero decompressor exit as fatal, so this surfaces as
+> a hard error rather than a silently truncated graph.
+
+Wikimedia also publishes `pagelinks.sql.gz`, where the link table is already built.
+This project parses wikitext instead on purpose: `pagelinks` records links **after
+template expansion**, so every navbox becomes a clique — every US President linked
+to every other — which wrecks community detection and dominates the layout.
+
+**For development, use Simple English Wikipedia** (~354 MB, 284k articles). It is a
+real graph with redirects, red links and genuine communities, and it runs end to end
+on a laptop in a couple of minutes:
+
+```bash
+wget -c https://dumps.wikimedia.org/simplewiki/latest/simplewiki-latest-pages-articles.xml.bz2
+```
+
+Note that simplewiki is a *single* bz2 stream, so it cannot be parallel-decompressed
+and takes ~120 s despite being 75× smaller than enwiki.
+
+## Quick start
+
+```bash
+# 1. Parse the dump into an integer link graph
+cargo build --release
+
+# development — Simple English, ~2 min
+./target/release/wiki-parser data/dumps/simplewiki-latest-pages-articles.xml.bz2 --out data/simple
+
+# the real thing
+./target/release/wiki-parser data/dumps/enwiki-20260801-pages-articles-multistream.xml.bz2 --out data
+
+# 2. Environment (RAPIDS must come from mamba, not pip)
+mamba create -n rapids-env -c rapidsai -c conda-forge -c nvidia \
+      rapids=24.04 python=3.11 cuda-version=12.2 -y
 mamba activate rapids-env
 pip install -r python/requirements.txt
+export KVIKIO_COMPAT_MODE=ON        # Fedora: disable GPU Direct Storage
 
-# 3. Run pipeline (Fedora: disable GPU Direct Storage)
-export KVIKIO_COMPAT_MODE=ON
-python python/01_graph_compute.py          # Full pipeline with checkpointing
-python python/02_video_stats.py            # Orphans, dead ends
-export GEMINI_API_KEY="your_key"
-python python/03_name_clusters.py          # LLM community labels
-python python/06_community_stats.py        # Per-community statistics
+# 3. Compute
+python python/01_graph_compute.py
+python python/02_video_stats.py
+GEMINI_API_KEY=... python python/03_name_clusters.py
+python python/06_community_stats.py
 
-# 4. Launch viewer
+# 4. View / export
 panel serve python/04_app.py --show
-
-# 5. Export static PNG
 python python/05_export_png.py --width 4096 --height 2160
 ```
 
+Set `pipeline.data_dir` (or pass `--data-dir`) to pick which of the two you work on.
+
+The pipeline runs **without a GPU** — PageRank falls back to sparse power iteration
+and layout falls back to a coarsened community layout — but the GPU path is what
+produces the real ForceAtlas2 map.
+
+### The two halves want different machines
+
+The parser is CPU- and I/O-bound and peaks around a few hundred MB of RAM; Phase 2
+is the part that wants a GPU. Since the parser's outputs are ~1–2 GB of Parquet
+against a 27 GB dump, **parse wherever the dump already is and copy the Parquet**:
+
+```bash
+# on the machine holding the dump
+./target/release/wiki-parser <dump>.xml.bz2 --out data
+
+# then move ~1-2 GB instead of 27 GB
+rsync -avP data/{titles,redirects,edges}.parquet desktop:~/wiki-graph/data/
+```
+
+The GPU machine then needs neither the Rust toolchain nor the dump.
+
+## Parser flags
+
+| Flag | Effect |
+|------|--------|
+| `--strip-templates` | Drop `{{...}}` bodies, excluding infobox links. Off by default: navboxes are transcluded and so contain no links in raw wikitext, meaning templates mostly contribute *infobox* links, which are real relations. |
+| `--strip-refs` | Drop `<ref>...</ref>` citation bodies |
+| `--keep-citation-sections` | Keep References / External links / Further reading. These are cut by default; `See also` is always kept, being editorially curated related articles. |
+| `--titles-only` | Stop after pass 1 |
+| `--decompressor` | Override the bz2 decompressor (default: lbzip2 → pbzip2 → bzip2) |
+
+HTML comments and `<nowiki>` are always removed — they do not render, so links
+inside them are not links.
+
 ## Configuration
 
-Edit `config.yaml` to tune parameters without modifying code:
+`config.yaml` tunes the compute and display stages; what counts as a *link* is
+decided by the parser flags above, not here.
 
 ```yaml
 pipeline:
-  sample_ratio: 1.0     # 0.01 = 1% sample for dev iteration
+  sample_ratio: 1.0     # sampling disconnects the graph; use simplewiki instead
 layout:
-  backend: "auto"       # "auto", "gpu", or "cpu"
-  algorithm: "fa2"      # GPU: ForceAtlas2. CPU fallback: "drl" or "fr"
-  max_iter: 500         # FA2 iterations
-  cpu_edge_sample: 1.0  # Edge sampling ratio for CPU fallback
+  backend: "auto"       # "auto", "gpu", "cpu"
+  max_iter: 500         # ForceAtlas2 iterations
+  cpu_method: "coarsened"  # or "drl"/"fr" for a direct layout on small graphs
 community:
-  top_n: 20             # Communities to label
+  objective: "modularity"
+  top_n: 20
 ```
 
-## CLI Flags
+## Cache management
+
+Each phase writes a cache and is skipped if that cache exists. A `manifest.json`
+fingerprints the inputs, so a cache built from different data is refused rather
+than silently merged.
 
 ```bash
-# Dev mode: sample 1% of edges for fast iteration
-python python/01_graph_compute.py --sample 0.01
-
-# Reset all caches and recompute
-python python/01_graph_compute.py --reset
-
-# Cache status and change detection
-python python/07_incremental.py --status
-python python/07_incremental.py --reset
+python python/07_incremental.py            # staleness check + status
+python python/01_graph_compute.py --reset  # recompute from scratch
 ```
 
-## Pipeline Scripts
+## Notes on scale
 
-| Script | Purpose | Engine |
-|--------|---------|--------|
-| `01_graph_compute.py` | PageRank, InDegree, FA2 Layout, Leiden Communities | GPU (cuGraph) |
-| `02_video_stats.py` | Orphans, dead ends, isolated nodes | CPU (PyArrow) |
-| `03_name_clusters.py` | LLM semantic community labels | Gemini API |
-| `04_app.py` | Interactive web viewer with search | Panel/Datashader |
-| `05_export_png.py` | Static 4K PNG export | Datashader |
-| `06_community_stats.py` | Per-community statistics JSON | CPU (Pandas) |
-| `07_incremental.py` | Cache management and change detection | CPU |
+- **The parser streams.** Page buffers are reused, so memory is O(largest article)
+  plus the title index — measured at 118 MB peak on Simple English Wikipedia, and
+  expected in the low single-digit GB on full English. It runs on a laptop.
+- **Vertex count comes from `titles.parquet`**, not from the edge list, so articles
+  with no links in either direction remain nodes.
+- **Deduplication is exact.** Targets are deduplicated per page, which is complete
+  global deduplication since edge (A,B) can only be produced by page A.
+- **Datashader's categorical aggregate costs `width × height × categories × 4`
+  bytes.** The viewer and exporter cap categories (default 24, rest as "Other");
+  an uncapped render at 4K with thousands of communities would ask for hundreds
+  of gigabytes.
 
-## Production Tuning
-
-* **Checkpointing:** Each phase saves results to disk. Crashes resume from the last checkpoint.
-* **Pre-symmetrization:** Edges are symmetrized on CPU before GPU loading, avoiding the 16GB VRAM limit during cuGraph's internal symmetrization.
-* **Arrow Bridge:** GPU→CPU transfers use `.to_arrow().to_pandas()` to bypass Numba driver bugs on GeForce cards.
-* **VRAM Monitoring:** `nvidia-smi` usage printed before/after GPU operations.
-* **Fedora:** Set `KVIKIO_COMPAT_MODE=ON` to disable GPU Direct Storage.
-* **Swap:** For `systemd-oomd`, ensure NVMe swap is active during string mapping.
-
-## Docker Deployment
+## Docker deployment
 
 ```bash
-docker-compose up -d
-# Available at http://localhost:5006 (or wiki.yourdomain.com via Traefik)
+WEBSOCKET_ORIGIN=wiki.example.com docker-compose up -d
+# http://localhost:5006
 ```
 
-The Docker image only includes visualization dependencies — no GPU or igraph needed since computation results are pre-baked into parquet files.
+The image carries visualization dependencies only — results are precomputed into
+Parquet, so no GPU, RAPIDS or igraph is needed to serve.
 
 ## Acknowledgments
-Inspired by ["I Made a Graph of Wikipedia... This Is What I Found"](https://www.youtube.com/watch?v=JheGL6uSF-4) by adumb. This is a completely independent implementation using Rust, RAPIDS, and igraph.
+
+Inspired by ["I Made a Graph of Wikipedia... This Is What I Found"](https://www.youtube.com/watch?v=JheGL6uSF-4)
+by adumb. This is an independent implementation using Rust, RAPIDS and igraph.

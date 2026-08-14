@@ -5,28 +5,15 @@ Saves progress after every call (crash-resilient).
 """
 
 import os
+import sys
 import time
 import json
-import yaml
 import pandas as pd
 from tqdm import tqdm
 from google import genai
 
-
-def load_config():
-    defaults = {"model": "gemini-2.5-flash", "rate_limit_sleep": 5}
-    try:
-        with open("config.yaml") as f:
-            user = yaml.safe_load(f)
-        if "gemini" in user:
-            defaults.update(user["gemini"])
-        if "community" in user:
-            defaults["top_n"] = user["community"].get("top_n", 20)
-        else:
-            defaults["top_n"] = 20
-    except FileNotFoundError:
-        defaults["top_n"] = 20
-    return defaults
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import Paths, load_config  # noqa: E402
 
 
 def main():
@@ -37,16 +24,22 @@ def main():
         print("  export GEMINI_API_KEY='your_key'")
         return
 
-    config = load_config()
+    cfg = load_config()
+    config = dict(cfg["gemini"])
+    config["top_n"] = cfg["community"]["top_n"]
+    paths = Paths(cfg["pipeline"]["data_dir"])
+    if not os.path.exists(paths.nodes):
+        raise SystemExit(f"{paths.nodes} not found. Run 01_graph_compute.py first.")
+
     print(f"Generating labels for top {config['top_n']} communities...")
     print(f"  Model: {config['model']}, Rate limit: {config['rate_limit_sleep']}s\n")
 
-    nodes_df = pd.read_parquet("data/nodes.parquet")
+    nodes_df = pd.read_parquet(paths.nodes)
     top_communities = nodes_df['community'].value_counts().head(config['top_n']).index
 
     client = genai.Client()
 
-    labels_path = "data/community_labels.json"
+    labels_path = paths.community_labels
     if os.path.exists(labels_path):
         with open(labels_path, "r") as f:
             labels = json.load(f)

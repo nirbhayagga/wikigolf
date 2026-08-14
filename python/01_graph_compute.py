@@ -1,627 +1,551 @@
 """
 Wikipedia Graph Compute Pipeline
 =================================
-Phase 0 (CPU): Load CSV, map strings to integers, cache to parquet
-Phase 1 (GPU): PageRank + In-Degree on directed graph
-Phase 2 (GPU): ForceAtlas2 layout + Leiden communities via cuGraph
-         (CPU fallback: igraph DRL with edge sampling + Leiden)
-Phase 3 (CPU): Merge all results, reverse-map integers to article names
+Consumes the Rust parser's output directly — there is no CSV ingest and no
+string→integer mapping step, because the parser already resolved article
+identity and emitted dense int32 ids.
 
-Features:
-  --sample 0.01    Sample 1% of edges for fast dev iteration
-  --reset          Delete all caches and start fresh
-  nvidia-smi VRAM monitoring, tqdm progress bars, per-phase timing
+Phase 1: PageRank + in-degree on the DIRECTED graph   (GPU cuGraph / CPU scipy)
+Phase 2: ForceAtlas2 layout + Leiden communities on the UNDIRECTED graph
+                                                      (GPU cuGraph / CPU igraph)
+Phase 3: Merge and attach article titles
+
+Directed vs undirected is deliberate: link direction carries importance
+(PageRank), but force layout and community structure are about mutual
+connectivity, so those run on the symmetrized graph.
+
+  --sample 0.01   Subsample edges for a smoke test. NOTE: this shatters the
+                  graph into disconnected fragments, so it cannot validate
+                  layout or community quality. To validate those, run the
+                  whole pipeline on Simple English Wikipedia instead.
+  --reset         Delete caches and recompute.
 """
 
+import argparse
+import gc
+import os
+import sys
+import time
 import warnings
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
-import os
-import gc
-import time
-import argparse
-import contextlib
-import subprocess
-import threading
 import numpy as np
 import pandas as pd
-import yaml
-from pyarrow import csv as pa_csv
-from tqdm import tqdm
+import pyarrow.parquet as pq
 
-DATA_DIR = "data"
-CACHE_EDGES = os.path.join(DATA_DIR, "cache_edges_int.parquet")
-CACHE_MAPPING = os.path.join(DATA_DIR, "cache_mapping.parquet")
-CACHE_DIRECTED_DONE = os.path.join(DATA_DIR, "cache_directed_done")
-CACHE_PAGERANK = os.path.join(DATA_DIR, "cache_pagerank.parquet")
-CACHE_INDEGREE = os.path.join(DATA_DIR, "cache_in_degree.parquet")
-CACHE_LAYOUT_DONE = os.path.join(DATA_DIR, "cache_layout_done")
-CACHE_LAYOUT = os.path.join(DATA_DIR, "cache_layout.parquet")
-CACHE_HASH = os.path.join(DATA_DIR, "cache_edges_hash.txt")
-OUTPUT_NODES = os.path.join(DATA_DIR, "nodes.parquet")
-OUTPUT_EDGES = os.path.join(DATA_DIR, "edges.parquet")
-
-ALL_CACHES = [
-    CACHE_EDGES, CACHE_MAPPING, CACHE_DIRECTED_DONE,
-    CACHE_PAGERANK, CACHE_INDEGREE, CACHE_LAYOUT_DONE,
-    CACHE_LAYOUT, CACHE_HASH, OUTPUT_NODES, OUTPUT_EDGES,
-]
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import (  # noqa: E402
+    Paths,
+    check_manifest,
+    elapsed,
+    free_gpu_memory,
+    load_config,
+    log_phase,
+    reset_caches,
+    run_with_timer,
+    vram_status,
+)
 
 
-def load_config():
-    defaults = {
-        "pipeline": {"sample_ratio": 1.0, "data_dir": "data"},
-        "gpu": {"store_transposed": True},
-        "layout": {"algorithm": "fa2", "backend": "auto", "max_iter": 500,
-                   "cpu_edge_sample": 1.0, "lin_log": False},
-        "community": {"algorithm": "leiden", "objective": "modularity", "top_n": 20},
-    }
-    try:
-        with open("config.yaml") as f:
-            user = yaml.safe_load(f)
-        for k in defaults:
-            if k in user:
-                defaults[k].update(user[k])
-    except FileNotFoundError:
-        pass
-    return defaults
-
-
-def log_phase(name):
-    """Print a phase header with timestamp."""
-    ts = time.strftime("%H:%M:%S")
-    print(f"\n{'='*60}")
-    print(f"[{ts}] {name}")
-    print(f"{'='*60}")
-
-
-def elapsed(start):
-    """Return human-readable elapsed time string."""
-    secs = time.time() - start
-    if secs < 60:
-        return f"{secs:.1f}s"
-    mins = secs / 60
-    return f"{mins:.1f}m"
-
-
-def vram_status():
-    """Print GPU VRAM usage if nvidia-smi is available."""
-    try:
-        out = subprocess.check_output(
-            ['nvidia-smi', '--query-gpu=memory.used,memory.total',
-             '--format=csv,nounits,noheader'],
-            stderr=subprocess.DEVNULL
-        )
-        used, total = out.decode().strip().split(', ')
-        print(f"   VRAM: {used}/{total} MB")
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        pass
-
-
-def _timer_proc(event, desc):
-    start = time.time()
-    while not event.is_set():
-        secs = int(time.time() - start)
-        h, m, s = secs // 3600, (secs % 3600) // 60, secs % 60
-        print(f"\r   {desc}: {h:02d}:{m:02d}:{s:02d}", end="", flush=True)
-        event.wait(1)
-    print()
-
-@contextlib.contextmanager
-def run_with_timer(desc):
-    """Run a block of code with a ticking threading timer to avoid CUDA fork issues."""
-    stop_event = threading.Event()
-    timer = threading.Thread(target=_timer_proc, args=(stop_event, desc))
-    timer.start()
-    try:
-        yield
-    finally:
-        stop_event.set()
-        timer.join()
-
-
-def reset_caches():
-    """Delete all cache files."""
-    for path in ALL_CACHES:
-        if os.path.exists(path):
-            os.remove(path)
-            print(f"   Deleted {path}")
-    print("   All caches cleared.")
-
-
-def phase0_prepare_edges(sample_ratio=1.0):
-    if os.path.exists(CACHE_EDGES) and os.path.exists(CACHE_MAPPING):
-        print("-> Cached integer edges found. Skipping Phase 0.")
-        return
-
-    csv_path = os.path.join(DATA_DIR, "edges.csv")
-    if not os.path.exists(csv_path):
-        print("ERROR: data/edges.csv not found.")
-        print("  Run the Rust parser first:")
-        print("    cargo build --release")
-        print("    pbzip2 -dc enwiki-latest-pages-articles.xml.bz2 | ./target/release/wiki-parser > data/edges.csv")
-        raise SystemExit(1)
-
-    t0 = time.time()
-    log_phase("Phase 0: String → Integer Mapping (CPU)")
-
-    print("   Loading CSV via PyArrow (C++ multithreaded)...")
-    edges_df = pa_csv.read_csv(csv_path).to_pandas()
-    print(f"   Raw edges: {len(edges_df):,}")
-
-    print("   Deduplicating edges...")
-    before = len(edges_df)
-    edges_df.drop_duplicates(inplace=True)
-    print(f"   After dedup: {len(edges_df):,}  (removed {before - len(edges_df):,})")
+def load_edges(paths, sample_ratio=1.0):
+    """Load the int32 edge list as two numpy arrays."""
+    tbl = pq.read_table(paths.edges, columns=["src", "dst"])
+    src = tbl.column("src").to_numpy()
+    dst = tbl.column("dst").to_numpy()
+    del tbl
 
     if sample_ratio < 1.0:
-        n = int(len(edges_df) * sample_ratio)
-        edges_df = edges_df.sample(n=n, random_state=42)
-        print(f"   Sampled {sample_ratio*100:.1f}%: {len(edges_df):,} edges")
+        rng = np.random.default_rng(42)
+        keep = rng.random(len(src)) < sample_ratio
+        src, dst = src[keep], dst[keep]
+        print(f"   Sampled {sample_ratio * 100:.1f}%: {len(src):,} edges")
 
-    # Save string-format edges BEFORE integer conversion (avoids re-reading 16GB CSV)
-    print("   Saving string-format edge parquet...")
-    edges_df.to_parquet(OUTPUT_EDGES, compression='zstd', index=False)
-
-    print("   Building string → integer mapping...")
-    unique_strings = pd.concat([edges_df['Source'], edges_df['Target']]).unique()
-    print(f"   Unique articles: {len(unique_strings):,}")
-
-    # Vectorized mapping — no Python for-loop over 6M+ strings
-    mapping = dict(zip(unique_strings, np.arange(len(unique_strings), dtype=np.int32)))
-
-    mapping_df = pd.DataFrame({
-        'vertex_id': np.arange(len(unique_strings), dtype=np.int32),
-        'vertex_name': unique_strings,
-    })
-    mapping_df.to_parquet(CACHE_MAPPING, compression='zstd', index=False)
-
-    print("   Converting edge columns to integers...")
-    with tqdm(total=3, desc="   Int mapping", unit="step") as pbar:
-        edges_df['Source'] = edges_df['Source'].map(mapping).astype(np.int32)
-        pbar.update(1)
-        edges_df['Target'] = edges_df['Target'].map(mapping).astype(np.int32)
-        pbar.update(1)
-        edges_df.to_parquet(CACHE_EDGES, compression='zstd', index=False)
-        pbar.update(1)
-
-    # Save hash for incremental update detection
-    size = os.path.getsize(csv_path)
-    with open(CACHE_HASH, "w") as f:
-        f.write(f"{size}")
-
-    del edges_df, unique_strings, mapping, mapping_df
-    gc.collect()
-    print(f"   Phase 0 complete in {elapsed(t0)}")
+    return src, dst
 
 
-def phase1_directed_gpu(config):
-    if os.path.exists(CACHE_DIRECTED_DONE):
-        print("-> Cached directed metrics found. Skipping Phase 1.")
-        return
+# ---------------------------------------------------------------------------
+# Phase 1 — PageRank + in-degree (directed)
+# ---------------------------------------------------------------------------
 
-    t0 = time.time()
-    log_phase("Phase 1: PageRank + In-Degree (GPU)")
-    vram_status()
-
+def _metrics_gpu(src, dst, n, cfg):
     import cudf
     import cugraph
 
-    print("   Loading integer edges into GPU VRAM...")
-    edges_gdf = cudf.read_parquet(CACHE_EDGES)
+    print("   [GPU] Loading edges into VRAM...")
+    gdf = cudf.DataFrame({"src": src, "dst": dst})
     vram_status()
 
-    print("   Building directed GPU graph...")
     G = cugraph.Graph(directed=True)
     G.from_cudf_edgelist(
-        edges_gdf, source='Source', destination='Target',
+        gdf,
+        source="src",
+        destination="dst",
         renumber=False,
-        store_transposed=config['gpu']['store_transposed']
+        store_transposed=cfg["gpu"]["store_transposed"],
     )
-    del edges_gdf
+    del gdf
     gc.collect()
     vram_status()
 
-    print("   Computing In-Degree...")
-    in_degree_pd = G.in_degree().to_arrow().to_pandas()
-    in_degree_pd.to_parquet(CACHE_INDEGREE, index=False)
+    # .to_arrow().to_pandas() rather than .to_pandas(): the Arrow bridge
+    # sidesteps Numba driver bugs on GeForce cards.
+    print("   [GPU] In-degree...")
+    indeg = G.in_degree().to_arrow().to_pandas()
 
-    print("   Computing PageRank...")
-    pagerank_pd = cugraph.pagerank(G).to_arrow().to_pandas()
-    pagerank_pd.to_parquet(CACHE_PAGERANK, index=False)
+    print("   [GPU] PageRank...")
+    pr = cugraph.pagerank(G).to_arrow().to_pandas()
 
     del G
     gc.collect()
-
-    # Force FULL CUDA memory release — RAPIDS memory pool holds onto VRAM
-    # even after del + gc.collect(), causing OOM when Phase 2 builds a new graph.
-    print("   Releasing all GPU memory...")
-    try:
-        import cupy as cp
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
-    except (ImportError, Exception):
-        pass
-    try:
-        import rmm
-        rmm.reinitialize()
-    except (ImportError, Exception):
-        pass
-    gc.collect()
+    free_gpu_memory()
     vram_status()
 
-    open(CACHE_DIRECTED_DONE, "w").close()
+    degree = np.zeros(n, dtype=np.int32)
+    col = "degree" if "degree" in indeg.columns else "in_degree"
+    degree[indeg["vertex"].to_numpy()] = indeg[col].to_numpy()
+
+    pagerank = np.zeros(n, dtype=np.float64)
+    pagerank[pr["vertex"].to_numpy()] = pr["pagerank"].to_numpy()
+    return pagerank, degree
+
+
+def _metrics_cpu(src, dst, n, alpha=0.85, tol=1e-9, max_iter=100):
+    """PageRank by sparse power iteration.
+
+    The previous pipeline had no CPU path for this phase at all — a missing
+    cuGraph meant an ImportError partway through. One CSR of the edge list is
+    ~3 GB at full enwiki scale, which is well within reach without a GPU.
+    """
+    import scipy.sparse as sp
+
+    print("   [CPU] Building transition matrix...")
+    outdeg = np.bincount(src, minlength=n).astype(np.float64)
+    degree = np.bincount(dst, minlength=n).astype(np.int32)
+
+    with np.errstate(divide="ignore"):
+        w = np.where(outdeg[src] > 0, 1.0 / outdeg[src], 0.0)
+    # M[i, j] = probability of stepping j -> i
+    M = sp.csr_matrix((w, (dst, src)), shape=(n, n))
+    del w
+
+    dangling = outdeg == 0
+    r = np.full(n, 1.0 / n)
+    teleport = (1.0 - alpha) / n
+
+    print(f"   [CPU] Power iteration (alpha={alpha}, tol={tol})...")
+    with run_with_timer("PageRank"):
+        for it in range(max_iter):
+            r_next = alpha * (M @ r + r[dangling].sum() / n) + teleport
+            err = np.abs(r_next - r).sum()
+            r = r_next
+            if err < tol:
+                break
+    print(f"   Converged after {it + 1} iterations (L1 delta {err:.2e})")
+    return r, degree
+
+
+def phase1_metrics(paths, cfg, n, sample_ratio):
+    if os.path.exists(paths.cache_metrics):
+        print("-> Cached metrics found. Skipping Phase 1.")
+        return
+
+    t0 = time.time()
+    log_phase("Phase 1: PageRank + In-Degree (directed)")
+    src, dst = load_edges(paths, sample_ratio)
+    print(f"   Vertices: {n:,}  Edges: {len(src):,}")
+
+    backend = cfg["layout"].get("backend", "auto")
+    pagerank = degree = None
+    if backend in ("auto", "gpu"):
+        try:
+            pagerank, degree = _metrics_gpu(src, dst, n, cfg)
+        except Exception as e:
+            if backend == "gpu":
+                raise
+            print(f"\n   GPU path unavailable ({type(e).__name__}: {e})")
+            print("   Falling back to CPU.")
+            free_gpu_memory()
+    if pagerank is None:
+        pagerank, degree = _metrics_cpu(src, dst, n)
+
+    del src, dst
+    gc.collect()
+
+    pd.DataFrame(
+        {
+            "vertex": np.arange(n, dtype=np.int32),
+            "pagerank": pagerank.astype(np.float64),
+            "degree": degree.astype(np.int32),
+        }
+    ).to_parquet(paths.cache_metrics, compression="zstd", index=False)
     print(f"   Phase 1 complete in {elapsed(t0)}")
 
 
-def _phase2_gpu(config, edges_df, n_vertices):
-    """GPU path: cuGraph ForceAtlas2 + cuGraph Leiden.
+# ---------------------------------------------------------------------------
+# Phase 2 — layout + communities (undirected)
+# ---------------------------------------------------------------------------
 
-    Problem: cuGraph FA2 internally forces symmetrization (to_undirected()),
-    and cuGraph's from_cudf_edgelist also symmetrizes for undirected graphs.
-    Both OOM on 16GB VRAM with 351M edges.
+def symmetrize(src, dst, n):
+    """Build the undirected edge set on the CPU.
 
-    Solution: Pre-symmetrize on CPU (128GB RAM), load as directed graph
-    (no cuGraph symmetrization), then flip the directed flag so FA2 skips
-    its internal to_undirected(). Everything fits in VRAM, runs at full speed.
-    Uses RMM managed memory (CUDA UVM) so overflows spill to system RAM.
+    cuGraph symmetrizes internally when given an undirected graph, and that
+    peak is what exhausted 16 GB of VRAM. Doing it here costs system RAM,
+    which is plentiful, and lets the GPU receive a graph it can just use.
     """
-    # --- Release any leftover GPU allocations from Phase 1 ---
-    print("   [GPU] Releasing stale GPU memory before Phase 2...")
-    try:
-        import cupy as cp
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
-    except (ImportError, Exception):
-        pass
-    gc.collect()
+    print("   Symmetrizing on CPU...")
+    t = time.time()
+    a = np.concatenate([src, dst])
+    b = np.concatenate([dst, src])
+    # Deduplicate (u, v) pairs by packing them into one int64 key.
+    key = (a.astype(np.int64) << 32) | b.astype(np.int64)
+    del a, b
+    key = np.unique(key)
+    u = (key >> 32).astype(np.int32)
+    v = (key & 0xFFFFFFFF).astype(np.int32)
+    del key
+    mask = u != v
+    u, v = u[mask], v[mask]
+    print(f"   Symmetric edges: {len(u):,} (from {len(src):,} directed) in {elapsed(t)}")
+    return u, v
 
-    # --- Enable managed memory (CUDA Unified Virtual Memory) ---
-    # With 28M vertices and 482M edges, cuGraph's internal graph construction
-    # needs ~10-12 GB of temporary buffers on top of the CSR data itself.
-    # 16 GB VRAM is not enough. Managed memory lets CUDA transparently page
-    # overflow to the 128 GB system RAM via the PCIe bus.
-    import rmm
-    rmm.reinitialize(managed_memory=True)
-    print("   [GPU] RMM managed memory enabled (VRAM + system RAM via UVM)")
-    vram_status()
 
+def _layout_gpu(u, v, n, cfg):
+    """cuGraph ForceAtlas2 + Leiden on a pre-symmetrized graph.
+
+    The graph is handed over as a CSR built on the CPU and loaded as
+    `directed=True`, then flagged undirected. Both steps exist to stop cuGraph
+    from re-symmetrizing (and OOMing) a graph that is already symmetric.
+    """
     import cudf
     import cugraph
-
-    # --- Pre-symmetrize on CPU (128GB RAM handles this easily) ---
-    print("   [CPU] Pre-symmetrizing edges (avoids GPU OOM)...")
-    t_sym = time.time()
-    src = edges_df['Source'].values
-    dst = edges_df['Target'].values
-
-    # Create both directions: A→B becomes A→B AND B→A
-    all_src = np.concatenate([src, dst])
-    all_dst = np.concatenate([dst, src])
-    del src, dst
-
-    # Deduplicate + remove self-loops
-    sym_df = pd.DataFrame({'src': all_src, 'dst': all_dst})
-    del all_src, all_dst
-    gc.collect()
-
-    before = len(sym_df)
-    sym_df.drop_duplicates(inplace=True)
-    sym_df = sym_df[sym_df['src'] != sym_df['dst']]
-    print(f"   Symmetric edges: {len(sym_df):,}  "
-          f"(from {len(edges_df):,} directed, deduped {before - len(sym_df):,})")
-    print(f"   Pre-symmetrize done in {elapsed(t_sym)}")
-
-    # --- Build CSR natively on CPU to bypass GPU memory peaks ---
-    # cuGraph's from_cudf_edgelist requires massive temporary GPU buffers to sort.
-    # Instead, we build the CSR (Compressed Sparse Row) on the CPU using scipy,
-    # which has 128GB RAM, and hand the compressed graph directly to the GPU.
-    # Combined with RMM managed memory, this minimizes VRAM pressure.
-    print("   [CPU] Building CSR matrix...")
+    import rmm
     import scipy.sparse as sp
-    
-    # Use int8 for weights (1 byte) just to satisfy COO format cheaply
-    weights = np.ones(len(sym_df), dtype=np.int8)
-    coo = sp.coo_matrix((weights, (sym_df['src'].values, sym_df['dst'].values)), 
-                        shape=(n_vertices, n_vertices))
-    
-    del sym_df, weights
-    gc.collect()
-    
+
+    free_gpu_memory()
+    # Managed memory lets allocations overflow to system RAM over PCIe.
+    rmm.reinitialize(managed_memory=True)
+    print("   [GPU] RMM managed memory enabled")
+    vram_status()
+
+    print("   [CPU] Building CSR...")
+    coo = sp.coo_matrix(
+        (np.ones(len(u), dtype=np.int8), (u, v)), shape=(n, n)
+    )
     csr = coo.tocsr()
     del coo
     gc.collect()
 
-    print("   [GPU] Loading compressed CSR into managed memory...")
-    # Cast to int32 — 28M vertices and 482M edges both fit in int32 range,
-    # saves ~110MB vs scipy's default int64 indptr
-    offsets_gdf = cudf.Series(csr.indptr.astype(np.int32))
-    indices_gdf = cudf.Series(csr.indices.astype(np.int32))
-    
+    print("   [GPU] Loading CSR...")
+    offsets = cudf.Series(csr.indptr.astype(np.int32))
+    indices = cudf.Series(csr.indices.astype(np.int32))
     del csr
     gc.collect()
-    vram_status()
 
-    print("   [GPU] Initializing graph...")
     G = cugraph.Graph(directed=True)
-    G.from_cudf_adjlist(offsets_gdf, indices_gdf, None)
-    
-    del offsets_gdf, indices_gdf
+    G.from_cudf_adjlist(offsets, indices, None)
+    del offsets, indices
     gc.collect()
+
+    # is_directed() reads graph_properties.directed, NOT properties.directed.
+    G.graph_properties.directed = False
+    assert not G.is_directed(), "graph still marked directed; FA2 would re-symmetrize"
     vram_status()
 
-    # Mark as undirected so FA2/Leiden skip their internal to_undirected()
-    # NOTE: cuGraph's is_directed() checks graph_properties.directed, NOT properties.directed
-    G.graph_properties.directed = False
-    assert not G.is_directed(), \
-        "Failed to set graph as undirected — FA2 will try to re-symmetrize and OOM"
-    print(f"   Graph marked undirected (is_directed={G.is_directed()}) — "
-          f"FA2 will NOT re-symmetrize")
+    # force_atlas2 calls G.nodes(), which for a CSR-built graph reconstructs
+    # and concatenates the edge list — several GB of VRAM for nothing. Inject
+    # the answer instead. Fragile against cuGraph internals changing.
+    nodes = cudf.Series(np.arange(n, dtype=np.int32), name="vertex")
+    if hasattr(G, "_nodes"):
+        G._nodes = nodes
+    G.nodes = lambda: nodes
 
-    # --- HOTFIX: Bypass OOM in G.nodes() ---
-    # cugraph's force_atlas2 calls G.nodes() to get the list of vertices for the output.
-    # When initialized from CSR, cuGraph reconstructs the edgelist and concats it to find unique nodes.
-    # Concatenating two 480M-row arrays takes ~8GB VRAM and causes std::bad_alloc.
-    # We pre-inject the nodes array to bypass this computation.
-    # NOTE: This is a fragile monkey-patch that overrides the instance method.
-    # It works because FA2/Leiden access G.nodes() on the instance, not the class.
-    # If cuGraph changes internal access patterns, this may need updating.
-    nodes_series = cudf.Series(np.arange(n_vertices, dtype=np.int32), name='vertex')
-    if hasattr(G, '_nodes'):
-        G._nodes = nodes_series
-    G.nodes = lambda: nodes_series
-
-
-    # --- ForceAtlas2 layout (GPU, Barnes-Hut) ---
-    fa2_iters = config['layout'].get('max_iter', 500)
-    print(f"   [GPU] Running ForceAtlas2 ({fa2_iters} iterations, Barnes-Hut)...")
-    t_layout = time.time()
-    with run_with_timer(f"FA2 ({fa2_iters} iters)"):
+    iters = cfg["layout"].get("max_iter", 500)
+    print(f"   [GPU] ForceAtlas2 ({iters} iterations, Barnes-Hut)...")
+    with run_with_timer(f"FA2 ({iters} iters)"):
         pos = cugraph.force_atlas2(
             G,
-            max_iter=fa2_iters,
+            max_iter=iters,
             barnes_hut_optimize=True,
             outbound_attraction_distribution=True,
-            lin_log_mode=config['layout'].get('lin_log', False),
+            lin_log_mode=cfg["layout"].get("lin_log", False),
             verbose=False,
         )
-    print(f"   Layout complete in {elapsed(t_layout)}")
-    vram_status()
-
-    # Extract coordinates
-    pos_pd = pos.to_pandas().sort_values('vertex').reset_index(drop=True)
-    coords = pos_pd[['x', 'y']].values.astype(np.float32)
+    pos = pos.to_arrow().to_pandas().sort_values("vertex")
+    coords = pos[["x", "y"]].to_numpy().astype(np.float32)
     del pos
     gc.collect()
+    vram_status()
 
-    # --- Leiden communities (GPU) ---
-    obj = config['community'].get('objective', 'modularity')
-    res = config['community'].get('resolution', 1.0)
-    print(f"   [GPU] Running Leiden communities (objective={obj})...")
-    t_comm = time.time()
-
+    res = cfg["community"].get("resolution", 1.0)
+    print(f"   [GPU] Leiden (resolution={res})...")
     with run_with_timer("Leiden"):
         parts, _ = cugraph.leiden(G, resolution=res)
-    parts_pd = parts.to_pandas().sort_values('vertex').reset_index(drop=True)
-    memberships = parts_pd['partition'].values.astype(np.int32)
-    n_communities = len(np.unique(memberships))
-    print(f"   {n_communities} communities found in {elapsed(t_comm)}")
+    parts = parts.to_arrow().to_pandas().sort_values("vertex")
+    memberships = parts["partition"].to_numpy().astype(np.int32)
 
-    del G, parts, parts_pd
+    del G, parts
     gc.collect()
+    free_gpu_memory()
+    return coords, memberships
 
-    return coords, memberships, n_vertices
+
+CANVAS = 1000.0
 
 
-def _phase2_cpu(config, edges_df, n_vertices):
-    """CPU fallback: igraph DRL with edge sampling for layout, full edges for Leiden."""
+def _normalize_centres(centres, connected):
+    """Spread community centres over a fixed canvas, robustly.
+
+    Only communities that actually link to another community carry positional
+    information. The rest — singletons and isolated fragments, which are the
+    large majority by count — get pushed to an outer ring instead of being
+    allowed to dominate the bounding box and squash the real structure into a
+    dot at the origin.
+    """
+    out = np.zeros_like(centres)
+    idx = np.flatnonzero(connected)
+
+    if len(idx) >= 2:
+        pts = centres[idx]
+        pts = pts - np.median(pts, axis=0)
+        # Scale on a high percentile so a few stragglers cannot shrink everything.
+        scale = np.percentile(np.hypot(pts[:, 0], pts[:, 1]), 95)
+        pts = pts / max(scale, 1e-9) * (CANVAS * 0.5)
+        out[idx] = pts
+    elif len(idx) == 1:
+        out[idx] = 0.0
+
+    iso = np.flatnonzero(~connected)
+    if len(iso):
+        ang = np.arange(len(iso)) * 2.39996323
+        r = CANVAS * 0.62
+        out[iso, 0] = r * np.cos(ang)
+        out[iso, 1] = r * np.sin(ang)
+    return out
+
+
+def _place_within_communities(mem, deg, centres, n, nc):
+    """Scatter each community's articles around its centre.
+
+    Articles are ordered by degree so hubs land near the middle, then placed
+    on a golden-angle spiral with radius proportional to sqrt(rank), which
+    fills the disc at uniform density. Disc area is proportional to community
+    size, so the discs tile the canvas rather than nesting concentrically.
+    """
+    sizes = np.bincount(mem, minlength=nc)
+
+    # Rank of each article within its own community, by descending degree.
+    order = np.lexsort((-deg, mem))
+    starts = np.zeros(nc + 1, dtype=np.int64)
+    np.cumsum(sizes, out=starts[1:])
+    rank = np.empty(n, dtype=np.int64)
+    rank[order] = np.arange(n) - starts[mem[order]]
+
+    frac = (rank + 0.5) / np.maximum(sizes[mem], 1)
+    radius = 0.30 * CANVAS * np.sqrt(sizes[mem] / n) * np.sqrt(frac)
+    theta = rank * 2.39996323  # golden angle
+
+    coords = np.empty((n, 2), dtype=np.float32)
+    coords[:, 0] = centres[mem, 0] + radius * np.cos(theta)
+    coords[:, 1] = centres[mem, 1] + radius * np.sin(theta)
+    return coords
+
+
+def _layout_cpu(u, v, n, cfg):
+    """CPU layout by coarsening: Leiden first, then lay out the community graph.
+
+    Running DRL or FR directly on the full graph is not viable — on 7.3M
+    symmetric edges (Simple English Wikipedia, a *small* wiki) it had not
+    finished after 10 minutes, and enwiki is 50x larger. Coarsening is how
+    large maps are normally built anyway: it keeps community structure legible
+    and runs in seconds. Set layout.cpu_method to "drl" or "fr" to force a
+    direct layout on graphs small enough to afford it.
+
+    Note this is an approximation of ForceAtlas2, not a substitute. The GPU
+    path remains the one that produces the real layout.
+    """
     import igraph as ig
 
-    n_edges = len(edges_df)
-    # Sample edges for layout to make DRL feasible on CPU
-    layout_sample = config['layout'].get('cpu_edge_sample', 0.15)
-    use_sampling = layout_sample < 1.0 and n_edges > 5_000_000
+    obj = cfg["community"].get("objective", "modularity")
+    res = cfg["community"].get("resolution", 1.0)
+    # igraph accepts a numpy (E, 2) array directly; calling .tolist() first
+    # would materialize millions of Python lists for no reason.
+    edges = np.column_stack([u, v])
 
-    if use_sampling:
-        n_sample = int(n_edges * layout_sample)
-        print(f"   [CPU] Sampling {layout_sample*100:.0f}% of edges for layout "
-              f"({n_sample:,} / {n_edges:,})...")
-        sampled = edges_df.sample(n=n_sample, random_state=42)
+    print(f"   [CPU] Building graph ({n:,} vertices, {len(edges):,} edges)...")
+    g = ig.Graph(n=n, edges=edges, directed=False)
+
+    print(f"   [CPU] Leiden (objective={obj}, resolution={res})...")
+    t = time.time()
+    # resolution is the granularity dial for the map: at 1.0 modularity Leiden
+    # returns ~24 macro-communities on simplewiki, which is too coarse to read
+    # as regions. It was previously not passed here at all, so the config key
+    # silently did nothing on the CPU path.
+    part = g.community_leiden(objective_function=obj, resolution=res)
+    mem = np.asarray(part.membership, dtype=np.int32)
+    nc = int(mem.max()) + 1
+    print(f"   {nc:,} communities in {elapsed(t)}")
+    del part
+    gc.collect()
+
+    method = cfg["layout"].get("cpu_method", "coarsened")
+    if method in ("drl", "fr"):
+        print(f"   [CPU] Direct {method.upper()} layout on the full graph...")
+        with run_with_timer(f"{method.upper()} layout"):
+            lay = g.layout_drl() if method == "drl" else g.layout_fruchterman_reingold()
+        coords = np.array(lay.coords, dtype=np.float32)
+        del g, lay
+        gc.collect()
+        return coords, mem
+
+    del g
+    gc.collect()
+
+    # --- lay out the community meta-graph -------------------------------
+    cu, cv = mem[u], mem[v]
+    inter = cu != cv
+    if nc > 1 and inter.any():
+        key = (cu[inter].astype(np.int64) << 32) | cv[inter].astype(np.int64)
+        uk, counts = np.unique(key, return_counts=True)
+        meta_edges = np.column_stack(
+            [(uk >> 32).astype(np.int32), (uk & 0xFFFFFFFF).astype(np.int32)]
+        )
+        connected = np.zeros(nc, dtype=bool)
+        connected[meta_edges.ravel()] = True
+        print(
+            f"   [CPU] Community graph: {nc:,} nodes "
+            f"({connected.sum():,} connected), {len(meta_edges):,} edges"
+        )
+        meta = ig.Graph(n=nc, edges=meta_edges, directed=False)
+        meta.es["weight"] = counts.astype(float)
+        with run_with_timer("community layout"):
+            raw = np.array(meta.layout_drl(weights="weight").coords, dtype=np.float32)
+        centres = _normalize_centres(raw, connected)
+        del meta, meta_edges, uk, counts, raw
     else:
-        sampled = edges_df
+        print("   [CPU] Single community — nothing to lay out")
+        centres = np.zeros((nc, 2), dtype=np.float32)
 
-    # --- Layout on sampled edges (visual approximation is fine) ---
-    print("   [CPU] Building edge tuple list for layout...")
-    src = sampled['Source'].values.tolist()
-    dst = sampled['Target'].values.tolist()
-    del sampled
-    gc.collect()
-    edge_tuples = list(tqdm(zip(src, dst), total=len(src),
-                            desc="   Edges", unit="edges", unit_scale=True))
-    del src, dst
+    del cu, cv, inter
     gc.collect()
 
-    print("   [CPU] Constructing igraph object for layout...")
-    g_layout = ig.Graph(n=n_vertices, edges=edge_tuples, directed=False)
-    g_layout.simplify()
-    del edge_tuples
-    gc.collect()
-    print(f"   Layout graph: {g_layout.vcount():,} vertices, {g_layout.ecount():,} edges")
-
-    algo = config['layout'].get('algorithm', 'drl')
-    if algo not in ('drl', 'fr'):
-        print(f"   [CPU] Note: '{algo}' not available in igraph, using DRL")
-        algo = 'drl'
-    print(f"   [CPU] Running {algo.upper()} layout...")
-    t_layout = time.time()
-
-    def _run_layout(graph, algorithm):
-        if algorithm == "fr":
-            return graph.layout_fruchterman_reingold()
-        return graph.layout_drl()
-
-    with run_with_timer(f"{algo.upper()} layout"):
-        layout = _run_layout(g_layout, algo)
-    print(f"   Layout complete in {elapsed(t_layout)}")
-
-    coords = np.array(layout.coords, dtype=np.float32)
-    del g_layout, layout
-    gc.collect()
-
-    # --- Leiden on FULL edge set (community quality requires all edges) ---
-    if use_sampling:
-        print("   [CPU] Building full-edge graph for Leiden...")
-        src_full = edges_df['Source'].values.tolist()
-        dst_full = edges_df['Target'].values.tolist()
-        del edges_df
-        gc.collect()
-        full_tuples = list(tqdm(zip(src_full, dst_full), total=len(src_full),
-                                desc="   Full edges", unit="edges", unit_scale=True))
-        del src_full, dst_full
-        gc.collect()
-        g_comm = ig.Graph(n=n_vertices, edges=full_tuples, directed=False)
-        g_comm.simplify()
-        del full_tuples
-        gc.collect()
-        print(f"   Community graph: {g_comm.vcount():,} vertices, {g_comm.ecount():,} edges")
-    else:
-        # No sampling — rebuild from edges_df (layout graph was already freed)
-        print("   [CPU] Building graph for Leiden...")
-        src_full = edges_df['Source'].values.tolist()
-        dst_full = edges_df['Target'].values.tolist()
-        del edges_df
-        gc.collect()
-        full_tuples = list(tqdm(zip(src_full, dst_full), total=len(src_full),
-                                desc="   Edges", unit="edges", unit_scale=True))
-        del src_full, dst_full
-        gc.collect()
-        g_comm = ig.Graph(n=n_vertices, edges=full_tuples, directed=False)
-        g_comm.simplify()
-        del full_tuples
-        gc.collect()
-
-    obj = config['community'].get('objective', 'modularity')
-    print(f"   [CPU] Running Leiden (objective={obj})...")
-    t_comm = time.time()
-
-    with run_with_timer("Leiden"):
-        partition = g_comm.community_leiden(objective_function=obj)
-    memberships = np.array(partition.membership, dtype=np.int32)
-    n_communities = len(set(partition.membership))
-    print(f"   {n_communities} communities found in {elapsed(t_comm)}")
-
-    del g_comm, partition
-    gc.collect()
-
-    return coords, memberships, n_vertices
+    deg = np.bincount(u, minlength=n).astype(np.float64)
+    coords = _place_within_communities(mem, deg, centres, n, nc)
+    return coords, mem
 
 
-def phase2_layout(config):
-    if os.path.exists(CACHE_LAYOUT_DONE):
+def phase2_layout(paths, cfg, n, sample_ratio):
+    if os.path.exists(paths.cache_layout):
         print("-> Cached layout found. Skipping Phase 2.")
         return
 
     t0 = time.time()
-
-    print("   Loading integer edges...")
-    edges_df = pd.read_parquet(CACHE_EDGES)
-    n_vertices = int(max(edges_df['Source'].max(), edges_df['Target'].max()) + 1)
-    print(f"   Vertices: {n_vertices:,}  Edges: {len(edges_df):,}")
-
-    # Try GPU path first, fall back to CPU
-    use_gpu = config['layout'].get('backend', 'auto')
-    if use_gpu in ('auto', 'gpu'):
-        try:
-            log_phase("Phase 2: Layout + Communities (GPU / cuGraph)")
-            coords, memberships, n_v = _phase2_gpu(config, edges_df, n_vertices)
-        except (ImportError, Exception) as e:
-            if use_gpu == 'gpu':
-                raise  # User explicitly requested GPU, don't hide errors
-            import traceback
-            print(f"\n   GPU path failed: {e}")
-            print("   --- Full traceback ---")
-            traceback.print_exc()
-            print("   --- End traceback ---")
-            print("   Falling back to CPU...")
-            edges_df = pd.read_parquet(CACHE_EDGES)  # reload in case GPU path modified memory
-            log_phase("Phase 2: Layout + Communities (CPU fallback)")
-            coords, memberships, n_v = _phase2_cpu(config, edges_df, n_vertices)
-    else:
-        log_phase("Phase 2: Layout + Communities (CPU / igraph)")
-        coords, memberships, n_v = _phase2_cpu(config, edges_df, n_vertices)
-
-    layout_df = pd.DataFrame({
-        'vertex': np.arange(n_v, dtype=np.int32),
-        'x': coords[:, 0], 'y': coords[:, 1],
-        'community': memberships,
-    })
-    layout_df.to_parquet(CACHE_LAYOUT, compression='zstd', index=False)
-
-    del coords, memberships, layout_df
+    src, dst = load_edges(paths, sample_ratio)
+    u, v = symmetrize(src, dst, n)
+    del src, dst
     gc.collect()
 
-    open(CACHE_LAYOUT_DONE, "w").close()
+    backend = cfg["layout"].get("backend", "auto")
+    coords = memberships = None
+    if backend in ("auto", "gpu"):
+        log_phase("Phase 2: Layout + Communities (GPU / cuGraph)")
+        try:
+            coords, memberships = _layout_gpu(u, v, n, cfg)
+        except Exception as e:
+            if backend == "gpu":
+                raise
+            import traceback
+
+            print(f"\n   GPU path failed: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            print("   Falling back to CPU.")
+            free_gpu_memory()
+    if coords is None:
+        log_phase("Phase 2: Layout + Communities (CPU / igraph)")
+        coords, memberships = _layout_cpu(u, v, n, cfg)
+
+    del u, v
+    gc.collect()
+
+    n_comm = len(np.unique(memberships))
+    print(f"   {n_comm:,} communities")
+
+    pd.DataFrame(
+        {
+            "vertex": np.arange(n, dtype=np.int32),
+            "x": coords[:, 0],
+            "y": coords[:, 1],
+            "community": memberships,
+        }
+    ).to_parquet(paths.cache_layout, compression="zstd", index=False)
     print(f"   Phase 2 complete in {elapsed(t0)}")
 
 
-def phase3_merge_and_save():
+# ---------------------------------------------------------------------------
+# Phase 3 — merge and attach titles
+# ---------------------------------------------------------------------------
+
+def phase3_merge(paths):
     t0 = time.time()
-    log_phase("Phase 3: Merge + Reverse Map")
+    log_phase("Phase 3: Merge + Attach Titles")
 
-    layout_df = pd.read_parquet(CACHE_LAYOUT)
-    pagerank_df = pd.read_parquet(CACHE_PAGERANK)
-    indegree_df = pd.read_parquet(CACHE_INDEGREE)
+    layout = pd.read_parquet(paths.cache_layout)
+    metrics = pd.read_parquet(paths.cache_metrics)
+    nodes = layout.merge(metrics, on="vertex", how="left")
 
-    # cuGraph in_degree() may return 'degree' or 'in_degree' depending on version.
-    # Normalize to 'degree' for consistency.
-    if 'in_degree' in indegree_df.columns and 'degree' not in indegree_df.columns:
-        indegree_df = indegree_df.rename(columns={'in_degree': 'degree'})
+    # Ids are dense 0..N-1, so titles attach by position — no dict of millions
+    # of strings, no hash lookups.
+    titles = pq.read_table(paths.titles, columns=["id", "title"])
+    order = titles.column("id").to_numpy()
+    names = np.asarray(titles.column("title").to_pylist(), dtype=object)
+    if not np.array_equal(order, np.arange(len(order))):
+        names = names[np.argsort(order)]
 
-    nodes = layout_df.merge(pagerank_df, on='vertex', how='left')
-    nodes = nodes.merge(indegree_df, on='vertex', how='left')
-    nodes['pagerank'] = nodes['pagerank'].fillna(0.0)
-    nodes['degree'] = nodes['degree'].fillna(0).astype(np.int32)
+    if len(names) != len(nodes):
+        raise SystemExit(
+            f"titles.parquet has {len(names):,} rows but the graph has "
+            f"{len(nodes):,} vertices — caches are stale, rerun with --reset"
+        )
 
-    print("   Reverse-mapping integers → article names...")
-    mapping_df = pd.read_parquet(CACHE_MAPPING)
-    id_to_name = dict(zip(mapping_df['vertex_id'], mapping_df['vertex_name']))
-    nodes['vertex'] = nodes['vertex'].map(id_to_name)
-    nodes = nodes.dropna(subset=['vertex'])
+    nodes["vertex"] = names
+    nodes = nodes[["vertex", "x", "y", "community", "pagerank", "degree"]]
 
-    print(f"   Final: {len(nodes):,} nodes")
-    nodes.to_parquet(OUTPUT_NODES, compression='zstd', index=False)
-    print(f"   Saved → {OUTPUT_NODES}")
+    nodes.to_parquet(paths.nodes, compression="zstd", index=False)
+    print(f"   {len(nodes):,} nodes → {paths.nodes}")
     print(f"   Phase 3 complete in {elapsed(t0)}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Wikipedia Graph Compute Pipeline")
-    parser.add_argument('--sample', type=float, default=None,
-                        help='Sample ratio (e.g., 0.01 for 1%% of edges)')
-    parser.add_argument('--reset', action='store_true',
-                        help='Delete all caches and start fresh')
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description="Wikipedia Graph Compute Pipeline")
+    ap.add_argument("--sample", type=float, default=None,
+                    help="edge sample ratio, e.g. 0.01 (smoke tests only)")
+    ap.add_argument("--reset", action="store_true", help="delete caches first")
+    ap.add_argument("--data-dir", default=None, help="override pipeline.data_dir")
+    args = ap.parse_args()
 
-    config = load_config()
-    os.makedirs(DATA_DIR, exist_ok=True)
+    cfg = load_config()
+    paths = Paths(args.data_dir or cfg["pipeline"]["data_dir"])
+    os.makedirs(paths.data_dir, exist_ok=True)
 
     if args.reset:
-        reset_caches()
+        reset_caches(paths)
 
-    sample = args.sample if args.sample is not None else config['pipeline']['sample_ratio']
+    paths.require_parser_outputs()
+    sample = args.sample if args.sample is not None else cfg["pipeline"]["sample_ratio"]
+    check_manifest(paths, sample, cfg)
 
-    t_total = time.time()
-    phase0_prepare_edges(sample_ratio=sample)
-    phase1_directed_gpu(config)
-    phase2_layout(config)
-    phase3_merge_and_save()
+    n = paths.n_articles()
+    total = time.time()
 
-    print(f"\n{'='*60}")
-    print(f"Pipeline complete in {elapsed(t_total)}")
-    print(f"  → {OUTPUT_NODES}")
-    print(f"  → {OUTPUT_EDGES}")
-    print(f"{'='*60}")
+    phase1_metrics(paths, cfg, n, sample)
+    phase2_layout(paths, cfg, n, sample)
+    phase3_merge(paths)
+
+    print(f"\n{'=' * 60}")
+    print(f"Pipeline complete in {elapsed(total)}")
+    print(f"  → {paths.nodes}")
+    print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":

@@ -3,18 +3,34 @@
 Generates data/community_stats.json and prints a summary table.
 """
 
-import pandas as pd
+import argparse
 import json
+import os
+import sys
+
+import pandas as pd
 from tqdm import tqdm
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import Paths, load_config  # noqa: E402
 
 
 def main():
+    ap = argparse.ArgumentParser(description="Per-community statistics")
+    ap.add_argument("--data-dir", default=None, help="override pipeline.data_dir")
+    args = ap.parse_args()
+
+    cfg = load_config()
+    paths = Paths(args.data_dir or cfg["pipeline"]["data_dir"])
+    if not os.path.exists(paths.nodes):
+        raise SystemExit(f"{paths.nodes} not found. Run 01_graph_compute.py first.")
+
     print("Generating community statistics...")
-    nodes = pd.read_parquet("data/nodes.parquet")
+    nodes = pd.read_parquet(paths.nodes)
 
     # Load labels if available
     try:
-        with open("data/community_labels.json", "r") as f:
+        with open(paths.community_labels, "r") as f:
             labels = json.load(f)
     except FileNotFoundError:
         labels = {}
@@ -57,7 +73,7 @@ def main():
         })
 
     # Save full stats
-    with open("data/community_stats.json", "w") as f:
+    with open(paths.community_stats, "w") as f:
         json.dump(stats, f, indent=2)
 
     # Print summary table
@@ -68,7 +84,7 @@ def main():
               f"  {s['avg_pagerank']:>10.2e}  {s['label']}")
 
     print(f"\nTotal communities: {len(stats)}")
-    print(f"Saved → data/community_stats.json")
+    print(f"Saved → {paths.community_stats}")
 
 
 if __name__ == "__main__":

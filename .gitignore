@@ -23,5 +23,8 @@ cufile.log
 .idea/
 
 # Documentation
+# Generated docs (codebase_reference.md) stay untracked; the two hand-written
+# ones are part of the project.
 *.md
 !README.md
+!CLAUDE.md

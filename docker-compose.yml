@@ -7,6 +7,9 @@ services:
       - "5006:5006"
     volumes:
       - ./data:/app/data:ro
+    environment:
+      # Restrict the websocket handshake to the host you actually serve from.
+      - WEBSOCKET_ORIGIN=${WEBSOCKET_ORIGIN:-*}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5006/')"]
       interval: 30s
