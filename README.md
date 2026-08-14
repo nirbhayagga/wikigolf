@@ -40,18 +40,38 @@ A naive parser emits link *strings*; this one emits article *ids*. It:
 - resolves redirect chains, so `USA` and `United States` are one node,
 - and **drops red links**: a target naming no real article is not a node.
 
-On Simple English Wikipedia that discards **half of all raw links** as noise:
+On full English Wikipedia that discards **a third of all raw links** as noise:
 
 ```
-raw links seen     7,955,308
-  red links        2,379,245  (29.9%)
-  duplicates       1,244,725  (15.6%)   case variants, redirect collapsing
-  namespace          385,551   (4.8%)
-edges              3,940,103
+articles           7,219,290
+redirects         11,996,595   (27,913 broken)
+
+raw links seen   354,808,900
+  duplicates     102,470,692  (28.9%)   case variants, redirect collapsing
+  red links       15,465,145   (4.4%)
+  namespace        4,948,037   (1.4%)
+  self links         243,457
+edges            231,681,569
 ```
 
 Skipping this is why an earlier version of this pipeline produced 28M "vertices"
-for a ~7M article encyclopedia, and then ran out of VRAM trying to lay them out.
+and 482M edges for a ~7M article encyclopedia, and then ran out of VRAM trying
+to lay them out.
+
+The red-link rate is strongly scale-dependent — **29.9% on Simple English versus
+4.4% here** — because a large wiki has far fewer links pointing at articles that
+do not exist. Duplicates move the other way (15.6% → 28.9%): redirect collapsing
+does more work at scale.
+
+Sanity check on the result — the most linked-to articles:
+
+```
+263,903  Association football      125,364  AllMusic
+246,090  United States             119,818  India
+218,891  World War II              117,001  World War I
+193,994  The New York Times        107,257  The Guardian
+146,419  New York City             107,018  Germany
+```
 
 ### Directed vs undirected
 
