@@ -12,11 +12,18 @@
 //! all a leaderboard needs. It is also something only this project can do,
 //! because verification needs the graph.
 
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::graph::Graph;
+
+/// Accepted runs, one JSON object per line.
+pub const LOG_FILE: &str = "leaderboard.jsonl";
 
 /// No human clicks a link, reads the next page and picks again this fast.
 const MIN_MS_PER_CLICK: u64 = 250;
@@ -80,11 +87,22 @@ impl RunError {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Entry {
     pub nickname: String,
     pub clicks: usize,
     pub ms: u64,
+    /// Signed anonymous player id. One entry per player per board, so a single
+    /// person cannot occupy the whole leaderboard under many nicknames.
+    #[serde(default)]
+    pub player: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Record {
+    board: String,
+    #[serde(flatten)]
+    entry: Entry,
 }
 
 #[derive(Default)]
@@ -92,6 +110,10 @@ pub struct Registry {
     runs: Mutex<HashMap<u64, Run>>,
     board: Mutex<HashMap<String, Vec<Entry>>>,
     next: Mutex<u64>,
+    /// Append-only log of accepted runs. Appends are crash-safe and need no
+    /// rewrite, unlike dumping the whole board on every submission; the
+    /// in-memory board is just a replay of this file.
+    log: Mutex<Option<std::fs::File>>,
 }
 
 /// Trim a submitted nickname to something safe to store and render.
@@ -108,7 +130,70 @@ pub fn clean_nickname(raw: &str) -> String {
     if s.is_empty() { "anonymous".into() } else { s }
 }
 
+/// Insert into a board, keeping one entry per player and the best order.
+fn place(list: &mut Vec<Entry>, entry: Entry) {
+    if let Some(existing) = list.iter_mut().find(|e| !e.player.is_empty() && e.player == entry.player)
+    {
+        // Same player, so keep only their better run rather than letting them
+        // stack the board with repeated attempts.
+        if (entry.clicks, entry.ms) < (existing.clicks, existing.ms) {
+            *existing = entry;
+        }
+    } else {
+        list.push(entry);
+    }
+    list.sort_by(|a, b| a.clicks.cmp(&b.clicks).then(a.ms.cmp(&b.ms)));
+    list.truncate(100);
+}
+
 impl Registry {
+    /// Replay the log so the board survives a restart.
+    pub fn open(dir: &Path) -> Result<Registry> {
+        let path = dir.join(LOG_FILE);
+        let reg = Registry::default();
+        if let Ok(f) = std::fs::File::open(&path) {
+            let mut n = 0usize;
+            let mut board = reg.board.lock().unwrap();
+            for line in BufReader::new(f).lines() {
+                let Ok(line) = line else { break };
+                if line.trim().is_empty() {
+                    continue;
+                }
+                // A partially written final line (torn by a crash) is skipped
+                // rather than aborting the whole restore.
+                match serde_json::from_str::<Record>(&line) {
+                    Ok(r) => {
+                        place(board.entry(r.board).or_default(), r.entry);
+                        n += 1;
+                    }
+                    Err(e) => eprintln!("   skipping malformed leaderboard line: {e}"),
+                }
+            }
+            drop(board);
+            eprintln!("   restored {n} leaderboard entries from {}", path.display());
+        }
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        *reg.log.lock().unwrap() = Some(f);
+        Ok(reg)
+    }
+
+    fn append(&self, board: &str, entry: &Entry) {
+        let mut guard = self.log.lock().unwrap();
+        let Some(f) = guard.as_mut() else { return };
+        let rec = Record { board: board.to_string(), entry: entry.clone() };
+        if let Ok(mut line) = serde_json::to_string(&rec) {
+            line.push('\n');
+            // Losing a leaderboard row is not worth failing a request over.
+            if let Err(e) = f.write_all(line.as_bytes()) {
+                eprintln!("   leaderboard write failed: {e}");
+            }
+        }
+    }
+
     pub fn issue(&self, run: RunSpec) -> u64 {
         let mut runs = self.runs.lock().unwrap();
         // Opportunistic eviction: cheaper than a timer thread and bounded by
@@ -150,6 +235,7 @@ impl Registry {
         id: u64,
         path: &[u32],
         nickname: &str,
+        player: &str,
     ) -> Result<Accepted, RunError> {
         let mut runs = self.runs.lock().unwrap();
         let run = runs.get_mut(&id).ok_or(RunError::UnknownRun)?;
@@ -199,13 +285,17 @@ impl Registry {
         let par = run.par;
         drop(runs);
 
-        let entry = Entry { nickname: clean_nickname(nickname), clicks, ms };
+        let entry = Entry {
+            nickname: clean_nickname(nickname),
+            clicks,
+            ms,
+            player: player.to_string(),
+        };
+        self.append(&key, &entry);
+
         let mut board = self.board.lock().unwrap();
         let list = board.entry(key).or_default();
-        list.push(entry);
-        // Clicks first, time as the tiebreaker.
-        list.sort_by(|a, b| a.clicks.cmp(&b.clicks).then(a.ms.cmp(&b.ms)));
-        list.truncate(100);
+        place(list, entry);
         let rank = list
             .iter()
             .position(|e| e.clicks == clicks && e.ms == ms)
@@ -258,6 +348,42 @@ mod tests {
         assert_eq!(clean_nickname("   "), "anonymous");
         assert_eq!(clean_nickname("a\u{0}b\nc"), "abc");
         assert_eq!(clean_nickname(&"x".repeat(200)).len(), 20);
+    }
+
+    fn e(player: &str, clicks: usize, ms: u64) -> Entry {
+        Entry { nickname: player.into(), clicks, ms, player: player.into() }
+    }
+
+    #[test]
+    fn one_entry_per_player_keeping_their_best() {
+        let mut list = Vec::new();
+        place(&mut list, e("ann", 6, 9000));
+        place(&mut list, e("ann", 4, 9000));   // improvement
+        place(&mut list, e("ann", 9, 1000));   // worse on clicks
+        assert_eq!(list.len(), 1, "a player must not stack the board");
+        assert_eq!(list[0].clicks, 4);
+    }
+
+    #[test]
+    fn ranks_by_clicks_then_time() {
+        let mut list = Vec::new();
+        place(&mut list, e("slow", 3, 90_000));
+        place(&mut list, e("fast", 3, 10_000));
+        place(&mut list, e("fewest", 2, 99_000));
+        assert_eq!(
+            list.iter().map(|x| x.nickname.as_str()).collect::<Vec<_>>(),
+            ["fewest", "fast", "slow"],
+            "clicks lead, time breaks ties"
+        );
+    }
+
+    #[test]
+    fn anonymous_entries_are_not_merged_together() {
+        // An empty player id means "unknown", not "the same person".
+        let mut list = Vec::new();
+        place(&mut list, Entry { nickname: "a".into(), clicks: 3, ms: 1, player: String::new() });
+        place(&mut list, Entry { nickname: "b".into(), clicks: 4, ms: 1, player: String::new() });
+        assert_eq!(list.len(), 2);
     }
 
     #[test]
