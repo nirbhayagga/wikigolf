@@ -1,100 +1,100 @@
 """
-05_export_png.py — Export static high-res PNG of the Wikipedia graph
-Renders directly via Datashader (no browser needed).
+05_export_png.py — Export a high-resolution PNG of the graph.
+
+Renders directly through Datashader; no browser involved.
 Usage: python python/05_export_png.py [--width 4096] [--height 2160]
 """
 
 import argparse
-import time
-import pandas as pd
 import json
-import numpy as np
-import yaml
+import os
+import sys
+import time
+
+import pandas as pd
+
+import colorcet as cc
 import datashader as ds
 import datashader.transfer_functions as tf
-import colorcet as cc
-from tqdm import tqdm
 from PIL import Image
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import Paths, load_config  # noqa: E402
 
-def load_config():
-    defaults = {"width": 4096, "height": 2160}
-    try:
-        with open("config.yaml") as f:
-            user = yaml.safe_load(f)
-        if "export" in user:
-            defaults.update(user["export"])
-    except FileNotFoundError:
-        pass
-    return defaults
+# See 04_app.py: the categorical aggregate costs width * height * categories
+# * 4 bytes. At 4096x2160 that is ~35 MB per category, so an unbounded
+# category count (Leiden finds thousands) would ask for hundreds of GB.
+MAX_CATEGORIES = 24
+OTHER = "Other"
 
 
 def main():
-    config = load_config()
-    parser = argparse.ArgumentParser(description="Export Wikipedia Graph as PNG")
-    parser.add_argument('--width', type=int, default=config['width'])
-    parser.add_argument('--height', type=int, default=config['height'])
-    parser.add_argument('--output', default='data/wikipedia_graph.png')
-    args = parser.parse_args()
+    cfg = load_config()
+    exp = cfg["export"]
+
+    ap = argparse.ArgumentParser(description="Export the Wikipedia graph as a PNG")
+    ap.add_argument("--width", type=int, default=exp["width"])
+    ap.add_argument("--height", type=int, default=exp["height"])
+    ap.add_argument("--max-categories", type=int,
+                    default=exp.get("max_categories", MAX_CATEGORIES))
+    ap.add_argument("--output", default=None)
+    ap.add_argument("--data-dir", default=None, help="override pipeline.data_dir")
+    args = ap.parse_args()
+
+    paths = Paths(args.data_dir or cfg["pipeline"]["data_dir"])
+    output = args.output or os.path.join(paths.data_dir, "wikipedia_graph.png")
+
+    if not os.path.exists(paths.nodes):
+        raise SystemExit(
+            f"{paths.nodes} not found.\n"
+            "  Run the pipeline first: python python/01_graph_compute.py"
+        )
 
     t0 = time.time()
-    print(f"Rendering {args.width}x{args.height} PNG...")
+    # This is the count_cat aggregate alone. Real peak RSS is several times
+    # larger: tf.shade's eq_hist equalization builds float intermediates over
+    # the whole category stack. Measured at 4096x2160 — 24 categories
+    # (budget 0.9 GB) renders fine, 80 categories (budget 2.9 GB) was
+    # OOM-killed on a 15 GB machine with ~7 GB free. Treat the budget as a
+    # lower bound and keep roughly 4x it available.
+    budget = args.width * args.height * (args.max_categories + 1) * 4 / 1e9
+    print(f"Rendering {args.width}x{args.height} (aggregate ~{budget:.1f} GB, "
+          f"expect ~{4 * budget:.1f} GB peak)...")
 
-    steps = tqdm(total=7, desc="Export PNG", unit="step")
+    nodes = pd.read_parquet(paths.nodes)
+    print(f"   {len(nodes):,} points")
 
-    nodes = pd.read_parquet("data/nodes.parquet")
-    steps.set_postfix_str("loaded nodes")
-    steps.update(1)
-
-    # Load community labels
     try:
-        with open("data/community_labels.json", "r") as f:
+        with open(paths.community_labels) as f:
             labels = json.load(f)
     except FileNotFoundError:
         labels = {}
 
-    nodes['label'] = nodes['community'].astype(str).map(labels).fillna("Other")
-    nodes['community'] = nodes['community'].astype(str).astype('category')
-    steps.set_postfix_str("mapped communities")
-    steps.update(1)
+    sizes = nodes["community"].value_counts()
+    keep = set(sizes.head(args.max_categories).index)
+    name_of = lambda c: labels.get(str(c), f"Cluster {c}")
+    cats = [name_of(c) for c in sizes.head(args.max_categories).index] + [OTHER]
+    nodes["label"] = pd.Categorical(
+        [name_of(c) if c in keep else OTHER for c in nodes["community"]],
+        categories=cats,
+    )
+    print(f"   {len(sizes):,} communities → {len(cats)} categories")
 
-    print(f"   {len(nodes):,} points, {nodes['community'].nunique()} communities")
-
-    # Render via Datashader
     cvs = ds.Canvas(plot_width=args.width, plot_height=args.height)
-    agg = cvs.points(nodes, 'x', 'y', agg=ds.count_cat('community'))
-    steps.set_postfix_str("aggregated")
-    steps.update(1)
+    agg = cvs.points(nodes, "x", "y", agg=ds.count_cat("label"))
 
-    # Build color key from community categories
-    cats = list(nodes['community'].cat.categories)
     palette = cc.glasbey_dark
-    color_key = {cat: palette[i % len(palette)] for i, cat in enumerate(cats)}
+    color_key = {c: palette[i % len(palette)] for i, c in enumerate(cats)}
+    img = tf.set_background(tf.shade(agg, color_key=color_key, min_alpha=100), "black")
 
-    img = tf.shade(agg, color_key=color_key, min_alpha=100)
-    img = tf.set_background(img, "black")
-    steps.set_postfix_str("shaded")
-    steps.update(1)
+    pil = img.to_pil()
+    pil.save(output, "PNG")
+    print(f"   Saved → {output}")
 
-    # Convert to PIL and save
-    pil_img = img.to_pil()
-    steps.set_postfix_str("converted to PIL")
-    steps.update(1)
-
-    pil_img.save(args.output, "PNG")
-    steps.set_postfix_str(f"saved {args.output}")
-    steps.update(1)
-    print(f"   Saved → {args.output} ({args.width}x{args.height})")
-
-    # Also export a smaller thumbnail
-    thumb_path = args.output.replace('.png', '_thumb.png')
-    thumb = pil_img.resize((args.width // 4, args.height // 4), Image.LANCZOS)
-    thumb.save(thumb_path, "PNG")
-    steps.set_postfix_str(f"saved thumbnail")
-    steps.update(1)
-    steps.close()
+    thumb_path = output.replace(".png", "_thumb.png")
+    pil.resize((args.width // 4, args.height // 4), Image.LANCZOS).save(thumb_path, "PNG")
     print(f"   Thumbnail → {thumb_path}")
-    print(f"   Export complete in {time.time() - t0:.1f}s")
+    print(f"   Done in {time.time() - t0:.1f}s")
 
 
 if __name__ == "__main__":

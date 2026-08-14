@@ -1,108 +1,91 @@
 """
-07_incremental.py — Detect edge list changes and manage cache invalidation.
+07_incremental.py — Cache status and invalidation.
+
 Usage:
-    python python/07_incremental.py          # Check if edges.csv changed
-    python python/07_incremental.py --reset  # Delete all caches
-    python python/07_incremental.py --status # Show cache status
+    python python/07_incremental.py            # status + staleness check
+    python python/07_incremental.py --status   # status only
+    python python/07_incremental.py --reset    # delete pipeline caches
 """
 
-import os
 import argparse
+import json
+import os
+import sys
 
-DATA_DIR = "data"
-
-CACHES = {
-    "Phase 0 (String Mapping)": [
-        "cache_edges_int.parquet", "cache_mapping.parquet", "cache_edges_hash.txt"
-    ],
-    "Phase 1 (GPU Directed)": [
-        "cache_directed_done", "cache_pagerank.parquet", "cache_in_degree.parquet"
-    ],
-    "Phase 2 (GPU Layout + Communities)": [
-        "cache_layout_done", "cache_layout.parquet"
-    ],
-    "Final Output": [
-        "nodes.parquet", "edges.parquet"
-    ],
-}
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import Paths, fingerprint, load_config, reset_caches  # noqa: E402
 
 
-def file_sig(path):
-    """Get file size as a simple change indicator."""
-    if not os.path.exists(path):
-        return None
-    return os.path.getsize(path)
-
-
-def check_changes():
-    """Check if edges.csv has changed since last run."""
-    csv_path = os.path.join(DATA_DIR, "edges.csv")
-    hash_path = os.path.join(DATA_DIR, "cache_edges_hash.txt")
-
-    if not os.path.exists(csv_path):
-        print("No edges.csv found. Run the Rust parser first.")
-        return False
-
-    current_sig = str(file_sig(csv_path))
-
-    if not os.path.exists(hash_path):
-        print("No previous run detected. All phases will run fresh.")
-        return True
-
-    with open(hash_path) as f:
-        cached_sig = f.read().strip()
-
-    if current_sig != cached_sig:
-        print(f"edges.csv has CHANGED (size: {cached_sig} → {current_sig})")
-        print("Caches are stale. Run with --reset then re-run 01_graph_compute.py")
-        return True
-    else:
-        print("edges.csv has NOT changed. Caches are valid.")
-        return False
-
-
-def show_status():
-    """Show which cache files exist."""
-    print(f"\nCache Status ({DATA_DIR}/):\n")
-    for phase, files in CACHES.items():
-        print(f"  {phase}:")
-        for fname in files:
-            path = os.path.join(DATA_DIR, fname)
+def show_status(paths):
+    groups = {
+        "Parser output": [
+            ("titles.parquet", paths.titles),
+            ("redirects.parquet", paths.redirects),
+            ("edges.parquet", paths.edges),
+        ],
+        "Pipeline caches": [
+            ("manifest.json", paths.manifest),
+            ("cache_metrics.parquet", paths.cache_metrics),
+            ("cache_layout.parquet", paths.cache_layout),
+        ],
+        "Final output": [
+            ("nodes.parquet", paths.nodes),
+            ("community_labels.json", paths.community_labels),
+            ("community_stats.json", paths.community_stats),
+        ],
+    }
+    print(f"\nStatus ({paths.data_dir}/):\n")
+    for group, files in groups.items():
+        print(f"  {group}:")
+        for name, path in files:
             if os.path.exists(path):
-                size_mb = os.path.getsize(path) / (1024 * 1024)
-                print(f"    ✓ {fname:40s} {size_mb:>8.1f} MB")
+                mb = os.path.getsize(path) / (1024 * 1024)
+                print(f"    ✓ {name:<26} {mb:>9.1f} MB")
             else:
-                print(f"    ✗ {fname:40s} (missing)")
+                print(f"    ✗ {name:<26}   (missing)")
         print()
 
 
-def reset_caches():
-    """Delete all cache files."""
-    count = 0
-    for _, files in CACHES.items():
-        for fname in files:
-            path = os.path.join(DATA_DIR, fname)
-            if os.path.exists(path):
-                os.remove(path)
-                print(f"   Deleted {path}")
-                count += 1
-    print(f"\n   Cleared {count} cache files.")
+def check_staleness(paths, cfg):
+    """Compare the recorded input fingerprint against the inputs on disk."""
+    if not os.path.exists(paths.edges) or not os.path.exists(paths.titles):
+        print("No parser output found. Run wiki-parser first.")
+        return
+    if not os.path.exists(paths.manifest):
+        print("No manifest — the pipeline has not run against these inputs yet.")
+        return
+
+    with open(paths.manifest) as f:
+        stored = json.load(f)
+    current = fingerprint(paths, stored.get("sample_ratio", 1.0), cfg)
+
+    diff = [k for k in current if stored.get(k) != current[k]]
+    if diff:
+        print("Inputs have CHANGED since the caches were built:")
+        for k in diff:
+            print(f"   {k}: {stored.get(k)} → {current[k]}")
+        print("\nCaches are stale. Run: python python/01_graph_compute.py --reset")
+    else:
+        print("Inputs unchanged. Caches are valid.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Wiki-Graph Cache Manager")
-    parser.add_argument('--reset', action='store_true', help='Delete all caches')
-    parser.add_argument('--status', action='store_true', help='Show cache status')
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description="Wiki-Graph cache manager")
+    ap.add_argument("--reset", action="store_true", help="delete pipeline caches")
+    ap.add_argument("--status", action="store_true", help="show status only")
+    ap.add_argument("--data-dir", default=None)
+    args = ap.parse_args()
+
+    cfg = load_config()
+    paths = Paths(args.data_dir or cfg["pipeline"]["data_dir"])
 
     if args.reset:
-        reset_caches()
+        reset_caches(paths)
     elif args.status:
-        show_status()
+        show_status(paths)
     else:
-        check_changes()
-        print()
-        show_status()
+        check_staleness(paths, cfg)
+        show_status(paths)
 
 
 if __name__ == "__main__":
