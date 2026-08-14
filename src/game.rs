@@ -112,6 +112,11 @@ fn search_score(title_lower: &str, q: &str, in_degree: usize) -> Option<u64> {
     Some(weight * (in_degree as u64 + 1))
 }
 
+/// How many of the most linked-to articles are eligible as race endpoints.
+/// Capped at a quarter of the wiki so small wikis are not reduced to a
+/// handful of candidates.
+const PLAYABLE_POOL: usize = 50_000;
+
 pub struct Game {
     pub graph: Graph,
     pub layout: Option<Layout>,
@@ -180,11 +185,23 @@ impl Game {
         let graph = Graph::load(data_dir)?;
         let layout = Layout::load(data_dir, graph.len())?;
 
-        // Endpoints should be articles a player has a chance of recognising and
-        // navigating from. Orphans and near-dead-ends make for miserable races.
-        let playable: Vec<u32> = (0..graph.len() as u32)
-            .filter(|&v| graph.reverse.degree(v) >= 25 && graph.forward.degree(v) >= 10)
+        // Endpoints must be articles a player has a chance of recognising.
+        //
+        // A fixed in-degree floor does not survive a change of wiki: 25 inbound
+        // links is respectable on Simple English (284k articles) but admits a
+        // vast obscure tail on full English (7.2M), which produced races like
+        // "Legong -> Bara Jumla". Rank instead, and keep the head.
+        let mut ranked: Vec<u32> = (0..graph.len() as u32)
+            .filter(|&v| graph.forward.degree(v) >= 10)
             .collect();
+        let keep = PLAYABLE_POOL.min(ranked.len().div_ceil(4));
+        if keep > 0 && keep < ranked.len() {
+            ranked.select_nth_unstable_by_key(keep - 1, |&v| {
+                std::cmp::Reverse(graph.reverse.degree(v))
+            });
+            ranked.truncate(keep);
+        }
+        let playable = ranked;
 
         Ok(Game { graph, layout, playable })
     }
