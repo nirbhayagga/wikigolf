@@ -8,20 +8,24 @@
 //! we report is optimal *in the world the player is playing in*.
 
 use anyhow::Result;
-use axum::extract::{Path as AxPath, Query, State};
+use axum::extract::{ConnectInfo, Path as AxPath, Query, Request, State};
 use axum::http::{header, StatusCode};
-use axum::response::{Html, IntoResponse};
+use axum::middleware::{self, Next};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use wiki_parser::game::{Difficulty, Game, Rng};
 use wiki_parser::graph::PathFinder;
+use wiki_parser::ratelimit::RateLimiter;
+use wiki_parser::runs::{Registry, RunSpec};
 
 #[derive(Parser, Debug)]
 #[command(name = "serve", about = "Wiki-race HTTP service")]
@@ -35,6 +39,12 @@ struct Args {
 
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
+
+    /// Read the client IP from X-Forwarded-For. Only enable behind a reverse
+    /// proxy you control — a client can otherwise forge the header and defeat
+    /// per-IP rate limiting entirely.
+    #[arg(long)]
+    trust_proxy: bool,
 }
 
 /// Pathfinder scratch space is ~72 MB per instance at enwiki scale, so it is
@@ -44,6 +54,13 @@ struct Args {
 struct App {
     game: Game,
     finders: Mutex<Vec<PathFinder>>,
+    runs: Registry,
+    /// Cheap reads: article pages, map tiles, meta.
+    rl_read: RateLimiter,
+    /// Everything that costs real CPU — a title scan or a BFS — plus anything
+    /// that mutates the leaderboard.
+    rl_heavy: RateLimiter,
+    trust_proxy: bool,
 }
 
 impl App {
@@ -64,6 +81,48 @@ impl App {
 }
 
 type Shared = Arc<App>;
+
+/// Resolve the client address for rate-limiting purposes.
+///
+/// X-Forwarded-For is client-controlled unless a proxy is guaranteed to
+/// overwrite it, so it is consulted only when explicitly trusted. The
+/// left-most entry is the original client.
+fn client_ip(app: &App, req: &Request, peer: IpAddr) -> IpAddr {
+    if app.trust_proxy {
+        if let Some(fwd) = req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            if let Some(first) = fwd.split(',').next() {
+                if let Ok(ip) = first.trim().parse::<IpAddr>() {
+                    return ip;
+                }
+            }
+        }
+    }
+    peer
+}
+
+async fn rate_limit(
+    State(app): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let path = req.uri().path().to_string();
+    let ip = client_ip(&app, &req, peer.ip());
+    let heavy = matches!(
+        path.as_str(),
+        "/api/search" | "/api/path" | "/api/puzzle" | "/api/daily" | "/api/submit"
+    );
+    let ok = if heavy { app.rl_heavy.allow(ip) } else { app.rl_read.allow(ip) };
+    if !ok {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, "5")],
+            Json(serde_json::json!({ "error": "rate limited, slow down" })),
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
 
 // ---------------------------------------------------------------------------
 // Wire types
@@ -147,10 +206,49 @@ struct PuzzleResponse {
     /// Present only for the daily challenge: the puzzle's sequence number.
     #[serde(skip_serializing_if = "Option::is_none")]
     number: Option<u64>,
+    /// Server-issued handle for this race. Scores are only accepted against
+    /// one of these, so the clock and the puzzle terms are ours, not the
+    /// client's.
+    run: u64,
+}
+
+#[derive(Deserialize)]
+struct SubmitRequest {
+    run: u64,
+    path: Vec<u32>,
+    #[serde(default)]
+    nickname: String,
+}
+
+#[derive(Serialize)]
+struct SubmitResponse {
+    accepted: bool,
+    clicks: usize,
+    par: usize,
+    ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rank: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct BoardRow {
+    rank: usize,
+    nickname: String,
+    clicks: usize,
+    ms: u64,
 }
 
 /// Day 0 of the daily challenge: 2026-01-01 UTC, as a Unix day index.
 const DAILY_EPOCH_DAY: u64 = 20_454;
+
+// Rate limits, per IP. Reads are generous because normal play issues one
+// article fetch per click. Heavy endpoints each cost a full-title scan or a
+// BFS, so they get a much smaller budget with a burst for ordinary bursts of
+// typing in the search box.
+const READ_BURST: f64 = 60.0;
+const READ_PER_SEC: f64 = 10.0;
+const HEAVY_BURST: f64 = 15.0;
+const HEAVY_PER_SEC: f64 = 2.0;
 
 /// Generate deterministically from a seed, retrying with a derived seed if a
 /// seed happens to produce no qualifying pair. Determinism is the whole point
@@ -314,14 +412,7 @@ async fn puzzle(
         });
 
     let out = tokio::task::spawn_blocking(move || {
-        puzzle_from_seed(&s, d, seed).map(|p| PuzzleResponse {
-            start: article_ref(&s.game, p.start),
-            goal: article_ref(&s.game, p.goal),
-            optimal: p.optimal,
-            ban_degree: p.ban_degree,
-            difficulty: name.clone(),
-            number: None,
-        })
+        puzzle_from_seed(&s, d, seed).map(|p| issue(&s, p, name.clone(), None))
     })
     .await;
 
@@ -330,6 +421,78 @@ async fn puzzle(
         Ok(None) => err("could not generate a puzzle at that difficulty").into_response(),
         Err(_) => err("puzzle generation failed").into_response(),
     }
+}
+
+/// Register a generated race and shape the response.
+fn issue(
+    s: &App,
+    p: wiki_parser::game::Puzzle,
+    difficulty: String,
+    number: Option<u64>,
+) -> PuzzleResponse {
+    let run = s.runs.issue(RunSpec {
+        start: p.start,
+        goal: p.goal,
+        ban_degree: p.ban_degree,
+        par: p.optimal,
+        difficulty: difficulty.clone(),
+        number,
+    });
+    PuzzleResponse {
+        start: article_ref(&s.game, p.start),
+        goal: article_ref(&s.game, p.goal),
+        optimal: p.optimal,
+        ban_degree: p.ban_degree,
+        difficulty,
+        number,
+        run,
+    }
+}
+
+async fn submit(State(s): State<Shared>, Json(req): Json<SubmitRequest>) -> impl IntoResponse {
+    let out = tokio::task::spawn_blocking(move || {
+        s.runs
+            .submit(&s.game.graph, req.run, &req.path, &req.nickname)
+            .map_err(|e| e.message(&s.game.graph))
+    })
+    .await;
+
+    match out {
+        Ok(Ok(a)) => Json(SubmitResponse {
+            accepted: true,
+            clicks: a.clicks,
+            par: a.par,
+            ms: a.ms,
+            rank: a.rank,
+        })
+        .into_response(),
+        // A rejected run is the client's fault, and the message says which
+        // check failed — useful for honest clients, useless to a forger.
+        Ok(Err(msg)) => err(msg).into_response(),
+        Err(_) => err("submission failed").into_response(),
+    }
+}
+
+async fn leaderboard(
+    State(s): State<Shared>,
+    Query(q): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let number = q.get("number").and_then(|v| v.parse::<u64>().ok());
+    let difficulty = q.get("difficulty").cloned().unwrap_or_else(|| "medium".into());
+    let rows: Vec<BoardRow> = s
+        .runs
+        .leaderboard(number, &difficulty)
+        .into_iter()
+        .enumerate()
+        .take(25)
+        .map(|(i, e)| BoardRow {
+            rank: i + 1,
+            nickname: e.nickname,
+            clicks: e.clicks,
+            ms: e.ms,
+        })
+        .collect();
+    Json(rows)
 }
 
 /// Today's challenge — same race for everyone, derived from the UTC date.
@@ -354,14 +517,7 @@ async fn daily(
 
     let label = name.clone();
     let out = tokio::task::spawn_blocking(move || {
-        puzzle_from_seed(&s, d, seed).map(|p| PuzzleResponse {
-            start: article_ref(&s.game, p.start),
-            goal: article_ref(&s.game, p.goal),
-            optimal: p.optimal,
-            ban_degree: p.ban_degree,
-            difficulty: label,
-            number: Some(number),
-        })
+        puzzle_from_seed(&s, d, seed).map(|p| issue(&s, p, label, Some(number)))
     })
     .await;
 
@@ -433,6 +589,15 @@ async fn main() -> Result<()> {
         t.elapsed().as_secs_f64()
     );
 
+    let state = Arc::new(App {
+        game,
+        finders: Mutex::new(Vec::new()),
+        runs: Registry::default(),
+        rl_read: RateLimiter::new(READ_BURST, READ_PER_SEC),
+        rl_heavy: RateLimiter::new(HEAVY_BURST, HEAVY_PER_SEC),
+        trust_proxy: args.trust_proxy,
+    });
+
     let app = Router::new()
         .route("/", get(index))
         .route("/api/meta", get(meta))
@@ -443,11 +608,24 @@ async fn main() -> Result<()> {
         .route("/api/daily", get(daily))
         .route("/api/map", get(map_points))
         .route("/api/landmarks", get(landmarks))
-        .with_state(Arc::new(App { game, finders: Mutex::new(Vec::new()) }));
+        .route("/api/submit", post(submit))
+        .route("/api/leaderboard", get(leaderboard))
+        .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
+        .with_state(state);
 
     let addr = format!("{}:{}", args.host, args.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    eprintln!("\n  wiki-race listening on http://{addr}\n");
-    axum::serve(listener, app).await?;
+    eprintln!("\n  wiki-race listening on http://{addr}");
+    eprintln!(
+        "  rate limits: {} reads/s, {} heavy/s per IP{}\n",
+        READ_PER_SEC, HEAVY_PER_SEC,
+        if args.trust_proxy { " (trusting X-Forwarded-For)" } else { "" }
+    );
+    axum::serve(
+        listener,
+        // ConnectInfo is what gives the rate limiter a peer address.
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }

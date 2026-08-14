@@ -11,6 +11,8 @@ pub mod dump;
 pub mod edges;
 pub mod game;
 pub mod graph;
+pub mod ratelimit;
+pub mod runs;
 pub mod index;
 pub mod output;
 pub mod titles;
