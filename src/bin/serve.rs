@@ -305,18 +305,44 @@ fn puzzle_from_seed(
     app: &App,
     d: Difficulty,
     seed: u64,
+    ban_top: Option<usize>,
 ) -> Option<wiki_parser::game::Puzzle> {
     app.with_finder(|g, pf| {
+        // An explicit hub cut from the slider overrides the difficulty preset's
+        // ban, but keeps its minimum route length — the two dials control
+        // different things.
+        let custom = ban_top.map(|n| g.hub_cut(n, 0).0);
         let mut s = seed;
         for _ in 0..6 {
             let mut rng = Rng::new(s);
-            if let Some(p) = g.puzzle(pf, d, &mut rng) {
-                return Some(p);
+            let found = match custom {
+                Some(ban) => g.puzzle_with(pf, ban, 3, &mut rng),
+                None => g.puzzle(pf, d, &mut rng),
+            };
+            if found.is_some() {
+                return found;
             }
             s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
         }
         None
     })
+}
+
+/// What a given hub-slider position actually excludes.
+async fn hubs(
+    State(s): State<Shared>,
+    Query(q): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let n = q.get("n").and_then(|v| v.parse().ok()).unwrap_or(0usize);
+    let (limit, names, excluded) = s.game.hub_cut(n, 12);
+    Json(serde_json::json!({
+        "ban_degree": limit,
+        "excluded": excluded,
+        "sample": names.iter().map(|&v| serde_json::json!({
+            "title": s.game.graph.title(v),
+            "in_degree": s.game.graph.reverse.degree(v),
+        })).collect::<Vec<_>>(),
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -458,8 +484,9 @@ async fn puzzle(
                 .unwrap_or(1)
         });
 
+    let ban_top = q.get("ban_top").and_then(|v| v.parse::<usize>().ok());
     let out = tokio::task::spawn_blocking(move || {
-        puzzle_from_seed(&s, d, seed).map(|p| issue(&s, p, name.clone(), None))
+        puzzle_from_seed(&s, d, seed, ban_top).map(|p| issue(&s, p, name.clone(), None))
     })
     .await;
 
@@ -568,7 +595,7 @@ async fn daily(
 
     let label = name.clone();
     let out = tokio::task::spawn_blocking(move || {
-        puzzle_from_seed(&s, d, seed).map(|p| issue(&s, p, label, Some(number)))
+        puzzle_from_seed(&s, d, seed, None).map(|p| issue(&s, p, label, Some(number)))
     })
     .await;
 
@@ -661,6 +688,7 @@ async fn main() -> Result<()> {
         .route("/api/daily", get(daily))
         .route("/api/map", get(map_points))
         .route("/api/landmarks", get(landmarks))
+        .route("/api/hubs", get(hubs))
         .route("/api/submit", post(submit))
         .route("/api/leaderboard", get(leaderboard))
         // Layers run outermost-last, so rate limiting is checked before we
