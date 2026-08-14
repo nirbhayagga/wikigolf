@@ -71,6 +71,14 @@
   button:disabled { opacity:.42; cursor:default; }
   #search { width:100%; margin-top:8px; }
 
+  #hubctl { margin-top:11px; }
+  .hubhead { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:3px; }
+  .lbl2 { color:var(--faint); font-size:10px; letter-spacing:1.2px; text-transform:uppercase; }
+  #hublvl { color:var(--accent); font-family:var(--mono); letter-spacing:.3px; }
+  #hubs { width:100%; margin:0; padding:0; accent-color:var(--accent); background:transparent; border:0; }
+  #hubwhat { color:var(--faint); font-size:11px; margin-top:5px; line-height:1.45; min-height:30px; }
+  #hubwhat b { color:var(--dim); font-weight:500; }
+
   /* from / to */
   .ends { padding:13px 17px; border-bottom:1px solid var(--line); display:flex; flex-direction:column; gap:9px; }
   .end { display:flex; gap:11px; align-items:flex-start; }
@@ -180,15 +188,17 @@
   <header>
     <div class="brand"><h1>WIKI RACE</h1><span id="pnum"></span></div>
     <div class="row">
-      <select id="difficulty" style="flex:1">
-        <option value="easy">Easy &mdash; no bans</option>
-        <option value="medium">Medium &mdash; hubs banned</option>
-        <option value="hard" selected>Hard &mdash; mega-hubs banned</option>
-      </select>
-      <button class="primary" id="new">Random</button>
+      <button class="primary" id="new" style="flex:1">Random race</button>
+      <button id="daily" style="flex:1">&#9733; Daily</button>
     </div>
-    <div class="row" style="margin-top:7px">
-      <button id="daily" style="flex:1">&#9733; Today&rsquo;s challenge</button>
+
+    <div id="hubctl">
+      <div class="hubhead">
+        <span class="lbl2">Hub exclusion</span>
+        <span class="lbl2" id="hublvl">off</span>
+      </div>
+      <input type="range" id="hubs" min="0" max="5" step="1" value="2">
+      <div id="hubwhat"></div>
     </div>
     <input id="search" placeholder="Search an article to jump there&hellip;">
     <div id="hits"></div>
@@ -480,12 +490,38 @@ async function finish(won) {
   draw();
 }
 
+// Slider stops. Not linear: the interesting range is all at the top of the
+// in-degree distribution, so each step is roughly a quarter-order of magnitude.
+const HUB_STOPS = [0, 25, 100, 500, 2500, 10000];
+
+async function describeHubs() {
+  const n = HUB_STOPS[+$('hubs').value];
+  $('hublvl').textContent = n === 0 ? 'off' : `top ${n.toLocaleString()}`;
+  if (n === 0) {
+    $('hubwhat').innerHTML = 'Every link is playable, including the mega-hubs. Most pairs are 2&ndash;3 clicks.';
+    return;
+  }
+  try {
+    const d = await api('/api/hubs?n=' + n);
+    const names = d.sample.slice(0, 6).map(x => `<b>${esc(x.title)}</b>`).join(', ');
+    $('hubwhat').innerHTML =
+      `Blocking <b>${d.excluded.toLocaleString()}</b> articles with more than ` +
+      `<b>${d.ban_degree.toLocaleString()}</b> inbound links &mdash; ${names}&hellip;`;
+  } catch { $('hubwhat').textContent = ''; }
+}
+
 async function startRace(endpoint) {
   for (const b of ['new','daily']) $(b).disabled = true;
   $('result').style.display='none';
   try {
-    const diff = $('difficulty').value;
-    const p = await api(`${endpoint}?difficulty=${diff}`);
+    // The daily is a fixed preset so everyone races the same thing; the
+    // slider only steers free play.
+    const isDaily = endpoint.endsWith('daily');
+    const q = isDaily
+      ? 'difficulty=medium'
+      : `difficulty=hard&ban_top=${HUB_STOPS[+$('hubs').value]}`;
+    const diff = isDaily ? 'daily' : 'custom';
+    const p = await api(`${endpoint}?${q}`);
     state = blank();
     Object.assign(state, { goal:p.goal, par:p.optimal, ban:p.ban_degree, run:p.run,
       number:p.number??null, difficulty:p.difficulty||diff });
@@ -514,6 +550,7 @@ $('back').onclick = () => {
 $('zin').onclick  = () => { target.s *= 1.5; };
 $('zout').onclick = () => { target.s /= 1.5; };
 $('zfit').onclick = fitAll;
+$('hubs').addEventListener('input', describeHubs);
 
 cv.addEventListener('wheel', e => {
   e.preventDefault();
@@ -606,6 +643,7 @@ window.addEventListener('keydown', e => {
     [MAP, LAND] = await Promise.all([api('/api/map?n=45000'), api('/api/landmarks?n=45')]);
   } else { $('nomap').style.display='grid'; $('legend').style.display='none'; }
   resize(); requestAnimationFrame(frame);
+  describeHubs();
   startRace('/api/daily');
 })();
 </script>

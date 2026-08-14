@@ -122,7 +122,14 @@ pub struct Game {
     pub layout: Option<Layout>,
     /// Articles worth using as puzzle endpoints, by id.
     playable: Vec<u32>,
+    /// The most linked-to articles, in descending in-degree order. Precomputed
+    /// so the hub slider can name what it excludes without re-ranking 7.2M
+    /// articles on every drag.
+    hubs: Vec<u32>,
 }
+
+/// How deep the hub ranking goes; the slider cannot exclude more than this.
+pub const MAX_HUBS: usize = 50_000;
 
 /// A generated race.
 pub struct Puzzle {
@@ -203,7 +210,43 @@ impl Game {
         }
         let playable = ranked;
 
-        Ok(Game { graph, layout, playable })
+        let mut hubs: Vec<u32> = (0..graph.len() as u32).collect();
+        let k = MAX_HUBS.min(hubs.len());
+        if k < hubs.len() {
+            hubs.select_nth_unstable_by_key(k - 1, |&v| {
+                std::cmp::Reverse(graph.reverse.degree(v))
+            });
+            hubs.truncate(k);
+        }
+        hubs.sort_unstable_by_key(|&v| std::cmp::Reverse(graph.reverse.degree(v)));
+
+        Ok(Game { graph, layout, playable, hubs })
+    }
+
+    /// The in-degree limit that excludes roughly the top `n` articles, with a
+    /// sample of what that excludes.
+    ///
+    /// "Roughly" is honest: articles tie on in-degree, and the ban is a
+    /// threshold rather than a list, so a tie straddling the cut takes its
+    /// whole group with it.
+    pub fn hub_cut(&self, n: usize, sample: usize) -> (Option<usize>, Vec<u32>, usize) {
+        if n == 0 {
+            return (None, Vec::new(), 0);
+        }
+        let n = n.min(self.hubs.len());
+        // Ban anything strictly above the degree of the first article we keep.
+        let limit = if n < self.hubs.len() {
+            self.graph.reverse.degree(self.hubs[n])
+        } else {
+            0
+        };
+        let excluded = self
+            .hubs
+            .iter()
+            .take_while(|&&v| self.graph.reverse.degree(v) > limit)
+            .count();
+        let names = self.hubs.iter().take(sample).copied().collect();
+        (Some(limit), names, excluded)
     }
 
     pub fn coords(&self, id: u32) -> Option<(f32, f32, i32)> {
@@ -214,10 +257,21 @@ impl Game {
     /// Generate a race meeting the difficulty's rules, or `None` if no
     /// candidate pair qualified within the attempt budget.
     pub fn puzzle(&self, pf: &mut PathFinder, d: Difficulty, rng: &mut Rng) -> Option<Puzzle> {
+        let (ban, min_len) = d.rules();
+        self.puzzle_with(pf, ban, min_len, rng)
+    }
+
+    /// Generate against an explicit hub cut, as the slider supplies.
+    pub fn puzzle_with(
+        &self,
+        pf: &mut PathFinder,
+        ban_degree: Option<usize>,
+        min_len: usize,
+        rng: &mut Rng,
+    ) -> Option<Puzzle> {
         if self.playable.len() < 2 {
             return None;
         }
-        let (ban_degree, min_len) = d.rules();
         let rev = &self.graph.reverse;
         let banned: Box<dyn Fn(u32) -> bool + '_> = match ban_degree {
             Some(limit) => Box::new(move |v: u32| rev.degree(v) > limit),
