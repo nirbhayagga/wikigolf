@@ -7,12 +7,7 @@
 //! Output is Parquet, ready for cuGraph/pandas with no further preprocessing.
 //! Peak memory is ~2 GB on full English Wikipedia, so this runs on a laptop.
 
-mod dump;
-mod edges;
-mod index;
-mod output;
-mod titles;
-mod wikitext;
+use wiki_parser::{edges, index, output, titles, wikitext};
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
