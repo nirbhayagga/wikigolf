@@ -4,15 +4,17 @@
 # Do NOT `pip install -r` this file into a RAPIDS environment. pip will pull
 # pandas/numpy/pyarrow from PyPI and may upgrade them out from under cudf,
 # which is compiled against specific versions — the env then imports but
-# segfaults or fails at runtime. Install from conda-forge in one solve instead:
+# segfaults or fails at runtime. Install from conda-forge in one solve instead.
 #
-#   mamba create -n rapids-env -c rapidsai -c conda-forge -c nvidia \
-#         rapids=24.04 python=3.11 cuda-version=12.2 \
-#         python-igraph pyyaml tqdm \
-#         datashader holoviews bokeh colorcet panel pillow -y
+# Kept on ONE line on purpose: pasting a backslash-continued command into a
+# terminal is how you end up asking mamba for a package called "pytho".
+#
+#   mamba create -n rapids-env -c rapidsai -c conda-forge -c nvidia rapids=24.04 python=3.11 cuda-version=12.2 python-igraph pyyaml tqdm datashader holoviews bokeh colorcet panel pillow -y
 #   mamba activate rapids-env
 #   pip install google-genai      # the only dep not on conda-forge
 #   export KVIKIO_COMPAT_MODE=ON  # Fedora: disable GPU Direct Storage
+#
+# Or just run: bash scripts/setup-gpu-env.sh
 #
 # rapids=24.04 is pinned deliberately. _layout_gpu depends on cuGraph
 # internals (from_cudf_adjlist, graph_properties.directed, and a monkey-patch
