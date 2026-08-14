@@ -37,10 +37,32 @@ import cudf  # noqa: E402
 import cugraph  # noqa: E402
 import rmm  # noqa: E402
 
+import os  # noqa: E402
+import subprocess  # noqa: E402
+
+try:
+    out = subprocess.check_output(
+        ["nvidia-smi", "--query-gpu=name,driver_version,memory.total",
+         "--format=csv,noheader"],
+        stderr=subprocess.DEVNULL,
+    ).decode().strip()
+    print(f"    gpu     {out}", flush=True)
+except Exception:  # noqa: BLE001
+    print("    gpu     nvidia-smi unavailable", flush=True)
+
 try:
     from numba import cuda as nbcuda
 
     print(f"    numba sees {len(nbcuda.gpus)} GPU(s)", flush=True)
+    # cuGraph's FA2 wrapper reaches back into Python and through ctypes into
+    # cuCtxGetDevice — that is numba's driver binding. cudf and cuGraph create
+    # their own C++ CUDA context, so numba's may never have been initialized.
+    # NUMBA_INIT=1 forces one first, to test whether that is the fault.
+    if os.environ.get("NUMBA_INIT"):
+        ctx = nbcuda.current_context()
+        print(f"    numba context forced: device {ctx.device.id}", flush=True)
+    else:
+        print("    numba context NOT initialized (set NUMBA_INIT=1 to force)", flush=True)
 except Exception as e:  # noqa: BLE001
     print(f"    numba.cuda unavailable: {type(e).__name__}: {e}", flush=True)
 
