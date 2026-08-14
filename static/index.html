@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wiki Race</title>
+<style>
+  :root {
+    --bg: #0b0d12; --panel: #141821; --line: #232936;
+    --text: #e6e9ef; --dim: #8b93a5; --accent: #6ea8fe;
+    --start: #4ade80; --goal: #f87171; --trail: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; overflow: hidden;
+  }
+  #map-pane { flex: 1; position: relative; min-width: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #hud {
+    position: absolute; top: 12px; left: 12px; padding: 10px 14px;
+    background: rgba(20,24,33,.85); border: 1px solid var(--line);
+    border-radius: 8px; backdrop-filter: blur(6px); pointer-events: none;
+  }
+  #hud b { color: var(--accent); }
+  #nomap {
+    position: absolute; inset: 0; display: none; place-items: center;
+    text-align: center; color: var(--dim); padding: 40px;
+  }
+  aside {
+    width: 420px; flex: none; background: var(--panel);
+    border-left: 1px solid var(--line); display: flex; flex-direction: column;
+  }
+  header { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  h1 { margin: 0 0 10px; font-size: 15px; letter-spacing: .3px; }
+  .row { display: flex; gap: 6px; }
+  select, button, input {
+    font: inherit; color: var(--text); background: #1b202b;
+    border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px;
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: #06101f; border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  #goalbar { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .lbl { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .8px; }
+  .goal-title { font-size: 17px; font-weight: 600; color: var(--goal); }
+  #current { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .cur-title { font-size: 18px; font-weight: 600; }
+  #links { overflow-y: auto; flex: 1; padding: 6px 8px; }
+  .link {
+    display: flex; align-items: center; gap: 9px; width: 100%;
+    padding: 7px 9px; border: 0; background: transparent; border-radius: 6px;
+    text-align: left; cursor: pointer; color: var(--text);
+  }
+  .link:hover { background: #1d2330; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .link .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .closer { color: var(--start); }
+  .further { color: #7c8494; }
+  #trailbox { padding: 10px 16px; border-top: 1px solid var(--line); max-height: 130px; overflow-y: auto; }
+  .crumb { color: var(--dim); font-size: 12px; }
+  .crumb b { color: var(--text); font-weight: 500; }
+  #result { padding: 16px; border-top: 1px solid var(--line); display: none; }
+  .verdict { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+  .optimal { color: var(--dim); font-size: 12px; margin-top: 8px; }
+  .optimal span { color: var(--accent); }
+  #search { width: 100%; margin-top: 8px; }
+  .hit { padding: 6px 9px; cursor: pointer; border-radius: 6px; }
+  .hit:hover { background: #1d2330; }
+  .empty { color: var(--dim); padding: 16px; }
+</style>
+</head>
+<body>
+
+<div id="map-pane">
+  <canvas id="cv"></canvas>
+  <div id="hud">
+    <div><b id="clicks">0</b> clicks &middot; par <b id="par">?</b></div>
+    <div class="meta" id="mapmeta"></div>
+  </div>
+  <div id="nomap">
+    <div>
+      <p><b>No map layout yet.</b></p>
+      <p>The race works without it, but the trajectory view needs
+      <code>nodes.parquet</code>.<br>Run <code>python python/01_graph_compute.py</code>.</p>
+    </div>
+  </div>
+</div>
+
+<aside>
+  <header>
+    <h1>WIKI RACE</h1>
+    <div class="row">
+      <select id="difficulty">
+        <option value="easy">Easy &mdash; no bans</option>
+        <option value="medium">Medium &mdash; hubs banned</option>
+        <option value="hard" selected>Hard &mdash; mega-hubs banned</option>
+      </select>
+      <button class="primary" id="new">New race</button>
+    </div>
+    <input id="search" placeholder="&hellip;or search an article to start from">
+    <div id="hits"></div>
+  </header>
+
+  <div id="goalbar">
+    <div class="lbl">Get to</div>
+    <div class="goal-title" id="goal">&mdash;</div>
+  </div>
+
+  <div id="current">
+    <div class="lbl">You are at</div>
+    <div class="cur-title" id="cur">&mdash;</div>
+    <div class="meta" id="curmeta"></div>
+  </div>
+
+  <div id="links"><div class="empty">Start a race to see links.</div></div>
+
+  <div id="trailbox"><div class="crumb" id="trail"></div></div>
+
+  <div id="result">
+    <div class="verdict" id="verdict"></div>
+    <div class="meta" id="verdictsub"></div>
+    <div class="optimal" id="optimal"></div>
+  </div>
+</aside>
+
+<script>
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d');
+
+let META = null, MAP = null, VIEW = null;
+let state = { goal: null, cur: null, trail: [], par: null, ban: null, done: false };
+
+// Distinct hues per community. Communities are integers with no inherent
+// order, so a hash spreads neighbours apart instead of giving them near
+// identical colours.
+const hue = c => ((c * 2654435761) >>> 0) % 360;
+const colorOf = c => c == null ? '#5b6478' : `hsl(${hue(c)},62%,58%)`;
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+  return r.json();
+}
+
+// ---------- map ----------
+function fitView() {
+  if (!META || !META.bounds) return;
+  const [x0, y0, x1, y1] = META.bounds;
+  const w = cv.width, h = cv.height, pad = 30;
+  const s = Math.min((w - 2 * pad) / Math.max(x1 - x0, 1e-6),
+                     (h - 2 * pad) / Math.max(y1 - y0, 1e-6));
+  VIEW = { s, ox: (w - (x1 - x0) * s) / 2 - x0 * s, oy: (h - (y1 - y0) * s) / 2 - y0 * s };
+}
+const px = x => x * VIEW.s + VIEW.ox;
+// Canvas y grows downward; the layout's does not, so flip to keep the map
+// oriented the way the PNG export renders it.
+const py = y => cv.height - (y * VIEW.s + VIEW.oy);
+
+function resize() {
+  const r = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  cv.width = Math.max(1, r.width * d); cv.height = Math.max(1, r.height * d);
+  fitView(); draw();
+}
+
+function draw() {
+  if (!VIEW) return;
+  ctx.fillStyle = '#0b0d12'; ctx.fillRect(0, 0, cv.width, cv.height);
+  if (MAP) {
+    for (let i = 0; i < MAP.x.length; i++) {
+      ctx.fillStyle = colorOf(MAP.c[i]);
+      ctx.globalAlpha = .40;
+      ctx.fillRect(px(MAP.x[i]), py(MAP.y[i]), 1.6, 1.6);
+    }
+    ctx.globalAlpha = 1;
+  }
+  const pts = state.trail.filter(a => a.x != null);
+  if (pts.length > 1) {
+    ctx.strokeStyle = 'rgba(251,191,36,.85)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(px(pts[0].x), py(pts[0].y));
+    for (const p of pts.slice(1)) ctx.lineTo(px(p.x), py(p.y));
+    ctx.stroke();
+    for (const p of pts.slice(1, -1)) marker(p, '#fbbf24', 3);
+  }
+  if (pts.length) marker(pts[0], getComputedStyle(document.body).getPropertyValue('--start'), 6);
+  if (state.goal && state.goal.x != null) marker(state.goal, '#f87171', 7, true);
+  const c = state.cur;
+  if (c && c.x != null) marker(c, '#ffffff', 5);
+}
+
+function marker(p, color, r, ring) {
+  ctx.beginPath(); ctx.arc(px(p.x), py(p.y), r, 0, 7);
+  ctx.fillStyle = color; ctx.fill();
+  if (ring) {
+    ctx.beginPath(); ctx.arc(px(p.x), py(p.y), r + 6, 0, 7);
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+}
+
+// ---------- game ----------
+const dist = (a, b) =>
+  (a && b && a.x != null && b.x != null) ? Math.hypot(a.x - b.x, a.y - b.y) : null;
+
+async function go(id) {
+  const d = await api('/api/article/' + id);
+  state.cur = d;
+  state.trail.push(d);
+  $('cur').textContent = d.title;
+  $('curmeta').textContent = `${d.links.length.toLocaleString()} outgoing links · ${d.in_degree.toLocaleString()} inbound`;
+  $('clicks').textContent = Math.max(0, state.trail.length - 1);
+  $('trail').innerHTML = state.trail.map(a => `<b>${esc(a.title)}</b>`).join(' &rsaquo; ');
+  $('trailbox').scrollTop = 1e6;
+
+  if (state.goal && d.id === state.goal.id) return finish();
+  renderLinks(d);
+  draw();
+}
+
+function renderLinks(d) {
+  const box = $('links');
+  if (!d.links.length) {
+    box.innerHTML = '<div class="empty">Dead end &mdash; no outgoing links. Back up.</div>';
+    return;
+  }
+  const here = dist(d, state.goal);
+  const links = d.links.slice().sort((a, b) => {
+    // Spatially closer to the goal first when we have a map; that is the
+    // whole point of racing on top of a layout. Falls back to importance.
+    const da = dist(a, state.goal), db = dist(b, state.goal);
+    if (da != null && db != null) return da - db;
+    return b.in_degree - a.in_degree;
+  });
+  box.innerHTML = '';
+  for (const l of links) {
+    const dl = dist(l, state.goal);
+    const closer = (here != null && dl != null) ? dl < here : null;
+    const el = document.createElement('button');
+    el.className = 'link';
+    el.innerHTML =
+      `<span class="dot" style="background:${colorOf(l.community)}"></span>` +
+      `<span class="name">${esc(l.title)}</span>` +
+      (closer === null ? '' :
+        `<span class="meta ${closer ? 'closer' : 'further'}">${closer ? '&#9660; closer' : '&#9650; further'}</span>`) +
+      `<span class="meta">${l.in_degree.toLocaleString()}</span>`;
+    el.onclick = () => go(l.id);
+    box.appendChild(el);
+  }
+  box.scrollTop = 0;
+}
+
+async function finish() {
+  state.done = true;
+  const clicks = state.trail.length - 1;
+  $('links').innerHTML = '';
+  $('result').style.display = 'block';
+  const par = state.par;
+  $('verdict').textContent =
+    clicks === par ? 'Optimal!' : clicks <= par + 1 ? 'Nice.' : 'Made it.';
+  $('verdictsub').textContent = `${clicks} clicks (par ${par})`;
+  try {
+    const p = await api('/api/path', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ from: state.trail[0].id, to: state.goal.id, ban_degree: state.ban })
+    });
+    if (p.found) {
+      $('optimal').innerHTML = 'Shortest route: ' +
+        p.path.map(a => `<span>${esc(a.title)}</span>`).join(' &rsaquo; ');
+    }
+  } catch (e) { $('optimal').textContent = ''; }
+  draw();
+}
+
+async function newRace() {
+  $('new').disabled = true;
+  $('result').style.display = 'none';
+  try {
+    const d = $('difficulty').value;
+    const p = await api('/api/puzzle?difficulty=' + d);
+    state = { goal: p.goal, cur: null, trail: [], par: p.optimal, ban: p.ban_degree, done: false };
+    $('goal').textContent = p.goal.title;
+    $('par').textContent = p.optimal;
+    await go(p.start.id);
+  } catch (e) {
+    $('links').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  } finally { $('new').disabled = false; }
+}
+
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// ---------- search ----------
+let timer = null;
+$('search').addEventListener('input', e => {
+  clearTimeout(timer);
+  const q = e.target.value.trim();
+  if (!q) { $('hits').innerHTML = ''; return; }
+  // Debounced: search is a linear scan of every title on the server.
+  timer = setTimeout(async () => {
+    const hits = await api('/api/search?limit=8&q=' + encodeURIComponent(q));
+    $('hits').innerHTML = '';
+    for (const h of hits) {
+      const el = document.createElement('div');
+      el.className = 'hit';
+      el.innerHTML = `${esc(h.title)} <span class="meta">${h.in_degree.toLocaleString()}</span>`;
+      el.onclick = () => {
+        $('hits').innerHTML = ''; $('search').value = '';
+        if (!state.goal) { $('links').innerHTML = '<div class="empty">Start a race first, then search to jump.</div>'; return; }
+        state.trail = []; state.done = false; $('result').style.display = 'none';
+        go(h.id);
+      };
+      $('hits').appendChild(el);
+    }
+  }, 220);
+});
+
+$('new').onclick = newRace;
+window.addEventListener('resize', resize);
+
+(async function init() {
+  META = await api('/api/meta');
+  $('mapmeta').textContent =
+    `${META.articles.toLocaleString()} articles · ${META.edges.toLocaleString()} links`;
+  if (META.has_map) {
+    MAP = await api('/api/map?n=40000');
+  } else {
+    $('nomap').style.display = 'grid';
+  }
+  resize();
+  newRace();
+})();
+</script>
+</body>
+</html>
