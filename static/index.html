@@ -78,7 +78,7 @@
 <div id="map-pane">
   <canvas id="cv"></canvas>
   <div id="hud">
-    <div><b id="clicks">0</b> clicks &middot; par <b id="par">?</b></div>
+    <div><b id="clicks">0</b> clicks &middot; par <b id="par">?</b> &middot; <b id="time">0:00</b></div>
     <div class="meta" id="mapmeta"></div>
   </div>
   <div id="nomap">
@@ -100,6 +100,9 @@
         <option value="hard" selected>Hard &mdash; mega-hubs banned</option>
       </select>
       <button class="primary" id="new">New race</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button id="daily" style="flex:1">&#9733; Today&rsquo;s challenge</button>
     </div>
     <input id="search" placeholder="&hellip;or search an article to start from">
     <div id="hits"></div>
@@ -123,6 +126,8 @@
   <div id="result">
     <div class="verdict" id="verdict"></div>
     <div class="meta" id="verdictsub"></div>
+    <div id="squares" style="font-size:19px;letter-spacing:2px;margin:8px 0"></div>
+    <div class="row"><button class="primary" id="share">Copy result</button></div>
     <div class="optimal" id="optimal"></div>
   </div>
 </aside>
@@ -131,8 +136,30 @@
 const $ = id => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d');
 
-let META = null, MAP = null, VIEW = null;
-let state = { goal: null, cur: null, trail: [], par: null, ban: null, done: false };
+let META = null, MAP = null, VIEW = null, TICK = null;
+const blank = () => ({
+  goal: null, cur: null, trail: [], par: null, ban: null, done: false,
+  // steps[i] is true when click i moved us closer to the goal on the map.
+  // This is what the share card's squares encode: a spoiler-free shape of
+  // the route that reveals no article names.
+  steps: [], started: null, elapsed: 0, number: null, difficulty: 'easy',
+});
+let state = blank();
+
+const mmss = ms => {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+
+function startClock() {
+  stopClock();
+  state.started = performance.now();
+  TICK = setInterval(() => {
+    if (state.done) return;
+    $('time').textContent = mmss(performance.now() - state.started);
+  }, 500);
+}
+function stopClock() { if (TICK) { clearInterval(TICK); TICK = null; } }
 
 // Distinct hues per community. Communities are integers with no inherent
 // order, so a hash spreads neighbours apart instead of giving them near
@@ -206,6 +233,11 @@ const dist = (a, b) =>
 
 async function go(id) {
   const d = await api('/api/article/' + id);
+  const prev = state.cur;
+  if (prev) {
+    const before = dist(prev, state.goal), after = dist(d, state.goal);
+    state.steps.push(before != null && after != null ? after < before : null);
+  }
   state.cur = d;
   state.trail.push(d);
   $('cur').textContent = d.title;
@@ -253,13 +285,24 @@ function renderLinks(d) {
 
 async function finish() {
   state.done = true;
+  state.elapsed = state.started ? performance.now() - state.started : 0;
+  stopClock();
   const clicks = state.trail.length - 1;
   $('links').innerHTML = '';
   $('result').style.display = 'block';
   const par = state.par;
   $('verdict').textContent =
     clicks === par ? 'Optimal!' : clicks <= par + 1 ? 'Nice.' : 'Made it.';
-  $('verdictsub').textContent = `${clicks} clicks (par ${par})`;
+  // Clicks lead, time breaks ties: clicks is the score only we can compute a
+  // par for, and ranking on time alone would reward fast clicking over
+  // knowing how things connect.
+  $('verdictsub').textContent = `${clicks} clicks (par ${par}) · ${mmss(state.elapsed)}`;
+  const sq = state.steps.map(s => s === null ? '⬜' : s ? '🟩' : '🟥');
+  $('squares').textContent = sq.join('');
+  state.share =
+    (state.number ? `Wiki Race #${state.number}` : 'Wiki Race') +
+    ` (${state.difficulty})\n${clicks} clicks · par ${par} · ${mmss(state.elapsed)}\n` +
+    sq.join('');
   try {
     const p = await api('/api/path', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -273,20 +316,27 @@ async function finish() {
   draw();
 }
 
-async function newRace() {
-  $('new').disabled = true;
+async function startRace(endpoint) {
+  $('new').disabled = $('daily').disabled = true;
   $('result').style.display = 'none';
   try {
     const d = $('difficulty').value;
-    const p = await api('/api/puzzle?difficulty=' + d);
-    state = { goal: p.goal, cur: null, trail: [], par: p.optimal, ban: p.ban_degree, done: false };
+    const p = await api(`${endpoint}?difficulty=${d}`);
+    state = blank();
+    Object.assign(state, {
+      goal: p.goal, par: p.optimal, ban: p.ban_degree,
+      number: p.number ?? null, difficulty: p.difficulty || d,
+    });
     $('goal').textContent = p.goal.title;
     $('par').textContent = p.optimal;
+    $('time').textContent = '0:00';
     await go(p.start.id);
+    startClock();
   } catch (e) {
     $('links').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
-  } finally { $('new').disabled = false; }
+  } finally { $('new').disabled = $('daily').disabled = false; }
 }
+const newRace = () => startRace('/api/puzzle');
 
 const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -307,8 +357,12 @@ $('search').addEventListener('input', e => {
       el.onclick = () => {
         $('hits').innerHTML = ''; $('search').value = '';
         if (!state.goal) { $('links').innerHTML = '<div class="empty">Start a race first, then search to jump.</div>'; return; }
-        state.trail = []; state.done = false; $('result').style.display = 'none';
-        go(h.id);
+        // Jumping restarts the run from the chosen article: clear the trail
+        // and the step record together, or the share squares would describe
+        // hops that are no longer on the board.
+        state.trail = []; state.steps = []; state.cur = null;
+        state.done = false; $('result').style.display = 'none';
+        go(h.id).then(startClock);
       };
       $('hits').appendChild(el);
     }
@@ -316,6 +370,24 @@ $('search').addEventListener('input', e => {
 });
 
 $('new').onclick = newRace;
+$('daily').onclick = () => startRace('/api/daily');
+$('share').onclick = async () => {
+  const btn = $('share');
+  try {
+    // navigator.clipboard needs a secure context, which plain http://host:port
+    // is not — so fall back rather than silently failing on a LAN address.
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(state.share);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = state.share; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); ta.remove();
+    }
+    btn.textContent = 'Copied!';
+  } catch { btn.textContent = 'Press Ctrl+C'; }
+  setTimeout(() => { btn.textContent = 'Copy result'; }, 1600);
+};
 window.addEventListener('resize', resize);
 
 (async function init() {

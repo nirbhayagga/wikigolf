@@ -133,6 +133,34 @@ struct PuzzleResponse {
     optimal: usize,
     ban_degree: Option<usize>,
     difficulty: String,
+    /// Present only for the daily challenge: the puzzle's sequence number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    number: Option<u64>,
+}
+
+/// Day 0 of the daily challenge: 2026-01-01 UTC, as a Unix day index.
+const DAILY_EPOCH_DAY: u64 = 20_454;
+
+/// Generate deterministically from a seed, retrying with a derived seed if a
+/// seed happens to produce no qualifying pair. Determinism is the whole point
+/// of the daily — everyone must get the same race — so the retry has to be a
+/// pure function of the seed too, never of wall-clock or attempt timing.
+fn puzzle_from_seed(
+    app: &App,
+    d: Difficulty,
+    seed: u64,
+) -> Option<wiki_parser::game::Puzzle> {
+    app.with_finder(|g, pf| {
+        let mut s = seed;
+        for _ in 0..6 {
+            let mut rng = Rng::new(s);
+            if let Some(p) = g.puzzle(pf, d, &mut rng) {
+                return Some(p);
+            }
+            s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        }
+        None
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -262,15 +290,13 @@ async fn puzzle(
         });
 
     let out = tokio::task::spawn_blocking(move || {
-        let mut rng = Rng::new(seed);
-        s.with_finder(|g, pf| {
-            g.puzzle(pf, d, &mut rng).map(|p| PuzzleResponse {
-                start: article_ref(g, p.start),
-                goal: article_ref(g, p.goal),
-                optimal: p.optimal,
-                ban_degree: p.ban_degree,
-                difficulty: name.clone(),
-            })
+        puzzle_from_seed(&s, d, seed).map(|p| PuzzleResponse {
+            start: article_ref(&s.game, p.start),
+            goal: article_ref(&s.game, p.goal),
+            optimal: p.optimal,
+            ban_degree: p.ban_degree,
+            difficulty: name.clone(),
+            number: None,
         })
     })
     .await;
@@ -279,6 +305,46 @@ async fn puzzle(
         Ok(Some(p)) => Json(p).into_response(),
         Ok(None) => err("could not generate a puzzle at that difficulty").into_response(),
         Err(_) => err("puzzle generation failed").into_response(),
+    }
+}
+
+/// Today's challenge — same race for everyone, derived from the UTC date.
+async fn daily(
+    State(s): State<Shared>,
+    Query(q): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let name = q.get("difficulty").cloned().unwrap_or_else(|| "medium".into());
+    let d = Difficulty::parse(&name);
+
+    let day = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|t| t.as_secs() / 86_400)
+        .unwrap_or(DAILY_EPOCH_DAY);
+    let number = day.saturating_sub(DAILY_EPOCH_DAY) + 1;
+
+    // Mix the difficulty into the seed so each difficulty has its own daily
+    // rather than three names for one race.
+    let seed = day
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (d as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+
+    let label = name.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        puzzle_from_seed(&s, d, seed).map(|p| PuzzleResponse {
+            start: article_ref(&s.game, p.start),
+            goal: article_ref(&s.game, p.goal),
+            optimal: p.optimal,
+            ban_degree: p.ban_degree,
+            difficulty: label,
+            number: Some(number),
+        })
+    })
+    .await;
+
+    match out {
+        Ok(Some(p)) => Json(p).into_response(),
+        Ok(None) => err("could not generate today's puzzle").into_response(),
+        Err(_) => err("daily generation failed").into_response(),
     }
 }
 
@@ -332,6 +398,7 @@ async fn main() -> Result<()> {
         .route("/api/article/{id}", get(article))
         .route("/api/path", post(path))
         .route("/api/puzzle", get(puzzle))
+        .route("/api/daily", get(daily))
         .route("/api/map", get(map_points))
         .with_state(Arc::new(App { game, finders: Mutex::new(Vec::new()) }));
 
