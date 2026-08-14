@@ -246,6 +246,49 @@ impl Game {
         hits.into_iter().take(limit).map(|(_, id)| id).collect()
     }
 
+    /// One label per community: its most linked-to article, placed at that
+    /// article's position.
+    ///
+    /// This is what turns a cloud of dots into something readable as a map.
+    /// The most-linked article in a region is a fair name for it — the
+    /// "Association football" cluster really is centred on that article — and
+    /// unlike the LLM community labels it needs no API key and no extra file.
+    pub fn landmarks(&self, limit: usize) -> Vec<(String, f32, f32, i32)> {
+        let Some(l) = self.layout.as_ref() else {
+            return Vec::new();
+        };
+        let ncom = l.community.iter().copied().max().unwrap_or(0).max(0) as usize + 1;
+        let mut best: Vec<(usize, u32)> = vec![(0, u32::MAX); ncom];
+        let mut size: Vec<u32> = vec![0; ncom];
+        for v in 0..self.graph.len() as u32 {
+            let c = l.community[v as usize];
+            if c < 0 {
+                continue;
+            }
+            let c = c as usize;
+            size[c] += 1;
+            let d = self.graph.reverse.degree(v);
+            if best[c].1 == u32::MAX || d > best[c].0 {
+                best[c] = (d, v);
+            }
+        }
+        let mut order: Vec<usize> = (0..ncom).filter(|&c| best[c].1 != u32::MAX).collect();
+        order.sort_unstable_by_key(|&c| std::cmp::Reverse(size[c]));
+        order.truncate(limit);
+        order
+            .into_iter()
+            .map(|c| {
+                let v = best[c].1;
+                (
+                    self.graph.title(v).to_string(),
+                    l.x[v as usize],
+                    l.y[v as usize],
+                    c as i32,
+                )
+            })
+            .collect()
+    }
+
     /// Background points for the map, as the highest in-degree articles.
     ///
     /// The full node set is far too large to ship to a browser (7.2M points),
