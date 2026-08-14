@@ -124,8 +124,15 @@ def _metrics_cpu(src, dst, n, alpha=0.85, tol=1e-9, max_iter=100):
     outdeg = np.bincount(src, minlength=n).astype(np.float64)
     degree = np.bincount(dst, minlength=n).astype(np.int32)
 
-    with np.errstate(divide="ignore"):
-        w = np.where(outdeg[src] > 0, 1.0 / outdeg[src], 0.0)
+    # Invert per-vertex first, then gather. `np.where(outdeg[src] > 0, 1/outdeg[src], 0)`
+    # is the obvious spelling but materializes three arrays the size of the
+    # edge list — 5.5 GB at enwiki scale, before the matrix even exists.
+    # Inverting the 7.2M-element vector costs nothing and leaves one gather.
+    inv = np.zeros(n, dtype=np.float64)
+    nz = outdeg > 0
+    inv[nz] = 1.0 / outdeg[nz]
+    w = inv[src]
+    del inv, nz
     # M[i, j] = probability of stepping j -> i
     M = sp.csr_matrix((w, (dst, src)), shape=(n, n))
     del w
@@ -522,7 +529,20 @@ def main():
                     help="edge sample ratio, e.g. 0.01 (smoke tests only)")
     ap.add_argument("--reset", action="store_true", help="delete caches first")
     ap.add_argument("--data-dir", default=None, help="override pipeline.data_dir")
+    ap.add_argument(
+        "--phases", default="1,2,3",
+        help="which phases to run, e.g. '1' or '2,3'. Phase 1 (PageRank) is "
+             "CPU-capable at full scale; phase 2 (layout) wants a GPU, so the "
+             "two halves often belong on different machines.",
+    )
     args = ap.parse_args()
+
+    try:
+        phases = {int(p) for p in args.phases.split(",") if p.strip()}
+    except ValueError:
+        raise SystemExit(f"--phases must be comma-separated numbers, got {args.phases!r}")
+    if not phases <= {1, 2, 3}:
+        raise SystemExit(f"--phases may only contain 1, 2 or 3; got {sorted(phases)}")
 
     cfg = load_config()
     paths = Paths(args.data_dir or cfg["pipeline"]["data_dir"])
@@ -538,13 +558,28 @@ def main():
     n = paths.n_articles()
     total = time.time()
 
-    phase1_metrics(paths, cfg, n, sample)
-    phase2_layout(paths, cfg, n, sample)
-    phase3_merge(paths)
+    if 1 in phases:
+        phase1_metrics(paths, cfg, n, sample)
+    if 2 in phases:
+        phase2_layout(paths, cfg, n, sample)
+    if 3 in phases:
+        # Phase 3 needs both caches; say so plainly rather than dying on a
+        # missing-file traceback halfway through a long run.
+        missing = [
+            p for p in (paths.cache_metrics, paths.cache_layout) if not os.path.exists(p)
+        ]
+        if missing:
+            raise SystemExit(
+                "Phase 3 needs both caches, missing: "
+                + ", ".join(missing)
+                + "\n  Run the earlier phases first (see --phases)."
+            )
+        phase3_merge(paths)
 
     print(f"\n{'=' * 60}")
-    print(f"Pipeline complete in {elapsed(total)}")
-    print(f"  → {paths.nodes}")
+    print(f"Phases {sorted(phases)} complete in {elapsed(total)}")
+    if 3 in phases:
+        print(f"  → {paths.nodes}")
     print(f"{'=' * 60}")
 
 
