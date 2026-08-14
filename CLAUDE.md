@@ -66,7 +66,9 @@ There is **no `edges.csv` and no string→integer mapping phase** — that work 
 
 **Cache manifest:** `manifest.json` records a fingerprint of the inputs (edge bytes/rows, title count, sample ratio). Phases refuse to run against caches built from different inputs, which closes the old hazard where a sampled phase silently merged with a full one.
 
-Verified end-to-end on Simple English Wikipedia: parser ~110 s, pipeline 15 s, 283,997 nodes / 3,940,103 edges.
+Verified end-to-end on Simple English Wikipedia: parser ~110 s, pipeline 60 s, 283,997 nodes / 3,940,103 edges.
+
+**Full English Wikipedia (20260801) is parsed:** 7,219,290 articles / 231,681,569 edges, 46.4 min, 3.10 GB peak RSS. The old pipeline's 28M vertices / 482M edges are gone. Outputs total ~1.05 GB, so copy the Parquet to the GPU machine, never the 26.67 GB dump. Phase 2 at this scale has still never been run — that is the remaining unknown.
 
 **Use the `-multistream` dump.** It is concatenated bz2 streams, so `pbzip2`/`lbzip2` can decompress it across cores: 58.9 MB/s measured vs 24.3 MB/s for a single stream. Decompression is the parser's bottleneck, so this is a 2.4x wall-clock difference. (simplewiki is single-stream and cannot benefit, which is why it takes ~110 s despite being 75x smaller.)
 
