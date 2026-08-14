@@ -9,6 +9,7 @@
 
 pub mod dump;
 pub mod edges;
+pub mod game;
 pub mod graph;
 pub mod index;
 pub mod output;
