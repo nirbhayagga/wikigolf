@@ -80,9 +80,19 @@ struct ArticleRef {
     #[serde(skip_serializing_if = "Option::is_none")]
     community: Option<i32>,
     in_degree: usize,
+    /// Set on link lists when a hub ban is in force. The link is still shown —
+    /// hiding "United States" from "Bank of America" makes the page look
+    /// broken rather than constrained — but it cannot be taken, which is what
+    /// keeps par honest.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    banned: bool,
 }
 
 fn article_ref(g: &Game, id: u32) -> ArticleRef {
+    article_ref_banned(g, id, false)
+}
+
+fn article_ref_banned(g: &Game, id: u32, banned: bool) -> ArticleRef {
     let (x, y, community) = match g.coords(id) {
         Some((x, y, c)) => (Some(x), Some(y), Some(c)),
         None => (None, None, None),
@@ -94,6 +104,7 @@ fn article_ref(g: &Game, id: u32) -> ArticleRef {
         y,
         community,
         in_degree: g.graph.reverse.degree(id),
+        banned,
     }
 }
 
@@ -220,10 +231,16 @@ async fn search(
     Json(out)
 }
 
-async fn article(State(s): State<Shared>, AxPath(id): AxPath<u32>) -> impl IntoResponse {
+async fn article(
+    State(s): State<Shared>,
+    AxPath(id): AxPath<u32>,
+    Query(q): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
     if id as usize >= s.game.graph.len() {
         return err("no such article id").into_response();
     }
+    let ban: Option<usize> = q.get("ban_degree").and_then(|v| v.parse().ok());
+    let goal: Option<u32> = q.get("goal").and_then(|v| v.parse().ok());
     let out = tokio::task::spawn_blocking(move || {
         let links: Vec<ArticleRef> = s
             .game
@@ -231,7 +248,14 @@ async fn article(State(s): State<Shared>, AxPath(id): AxPath<u32>) -> impl IntoR
             .forward
             .neighbors(id)
             .iter()
-            .map(|&v| article_ref(&s.game, v))
+            .map(|&v| {
+                // The goal itself is never banned, matching the pathfinder —
+                // otherwise a high-degree goal would be unreachable.
+                let blocked = ban.is_some_and(|limit| {
+                    Some(v) != goal && s.game.graph.reverse.degree(v) > limit
+                });
+                article_ref_banned(&s.game, v, blocked)
+            })
             .collect();
         ArticleDetail { article: article_ref(&s.game, id), links }
     })
@@ -376,6 +400,24 @@ async fn map_points(
     )
 }
 
+async fn landmarks(
+    State(s): State<Shared>,
+    Query(q): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let n = q.get("n").and_then(|v| v.parse().ok()).unwrap_or(40usize).min(300);
+    let out = tokio::task::spawn_blocking(move || s.game.landmarks(n))
+        .await
+        .unwrap_or_default();
+    let items: Vec<serde_json::Value> = out
+        .into_iter()
+        .map(|(t, x, y, c)| serde_json::json!({ "title": t, "x": x, "y": y, "c": c }))
+        .collect();
+    (
+        [(header::CACHE_CONTROL, "public, max-age=3600")],
+        Json(items),
+    )
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -400,6 +442,7 @@ async fn main() -> Result<()> {
         .route("/api/puzzle", get(puzzle))
         .route("/api/daily", get(daily))
         .route("/api/map", get(map_points))
+        .route("/api/landmarks", get(landmarks))
         .with_state(Arc::new(App { game, finders: Mutex::new(Vec::new()) }));
 
     let addr = format!("{}:{}", args.host, args.port);

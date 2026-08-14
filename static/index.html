@@ -6,362 +6,555 @@
 <title>Wiki Race</title>
 <style>
   :root {
-    --bg: #0b0d12; --panel: #141821; --line: #232936;
-    --text: #e6e9ef; --dim: #8b93a5; --accent: #6ea8fe;
-    --start: #4ade80; --goal: #f87171; --trail: #fbbf24;
+    --bg:#070910; --bg2:#0d1119; --panel:#11151f; --card:#161b27;
+    --line:#232a3a; --line2:#2e374b;
+    --text:#e8ecf4; --dim:#8791a8; --faint:#5c6579;
+    --accent:#5eead4; --accent2:#38bdf8;
+    --from:#4ade80; --to:#fb7185; --trail:#fbbf24; --locked:#4a5163;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   }
-  * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; }
+  * { box-sizing:border-box; }
+  html,body { height:100%; margin:0; }
   body {
-    background: var(--bg); color: var(--text);
-    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    display: flex; overflow: hidden;
+    background:var(--bg); color:var(--text); display:flex; overflow:hidden;
+    font:14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing:antialiased;
   }
-  #map-pane { flex: 1; position: relative; min-width: 0; }
-  canvas { display: block; width: 100%; height: 100%; }
-  #hud {
-    position: absolute; top: 12px; left: 12px; padding: 10px 14px;
-    background: rgba(20,24,33,.85); border: 1px solid var(--line);
-    border-radius: 8px; backdrop-filter: blur(6px); pointer-events: none;
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-thumb { background:var(--line2); border-radius:6px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+
+  /* ---------- map ---------- */
+  #stage { flex:1; position:relative; min-width:0; background:radial-gradient(ellipse at 50% 45%, #0e1420 0%, #070910 70%); }
+  canvas { display:block; width:100%; height:100%; cursor:grab; }
+  canvas.drag { cursor:grabbing; }
+  .glass {
+    position:absolute; background:rgba(13,17,25,.82); border:1px solid var(--line);
+    border-radius:10px; backdrop-filter:blur(10px);
+    box-shadow:0 8px 26px rgba(0,0,0,.45);
   }
-  #hud b { color: var(--accent); }
-  #nomap {
-    position: absolute; inset: 0; display: none; place-items: center;
-    text-align: center; color: var(--dim); padding: 40px;
+  #hud { top:14px; left:14px; padding:11px 15px; }
+  #hud .big { font:600 15px/1.3 var(--mono); letter-spacing:.4px; }
+  #hud .big i { font-style:normal; color:var(--faint); margin:0 7px; }
+  #hud .sub { color:var(--dim); font-size:11px; margin-top:3px; }
+  .par-over { color:var(--to); }
+  .par-ok { color:var(--from); }
+
+  #legend { bottom:14px; left:14px; padding:9px 13px; font-size:11px; color:var(--dim); max-width:290px; }
+  #legend b { color:var(--text); font-weight:600; }
+  #legend .k { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; vertical-align:-1px; }
+
+  #zoomer { top:14px; right:14px; padding:5px; display:flex; gap:4px; flex-direction:column; }
+  #zoomer button { width:28px; height:28px; padding:0; font-size:15px; line-height:1; }
+
+  #nomap { position:absolute; inset:0; display:none; place-items:center; text-align:center;
+           color:var(--dim); padding:40px; }
+
+  /* ---------- panel ---------- */
+  aside { width:432px; flex:none; background:var(--panel); border-left:1px solid var(--line);
+          display:flex; flex-direction:column; }
+  header { padding:15px 17px 13px; border-bottom:1px solid var(--line); }
+  .brand { display:flex; align-items:baseline; gap:9px; margin-bottom:12px; }
+  .brand h1 { margin:0; font-size:15px; letter-spacing:2.2px; font-weight:700; }
+  .brand span { color:var(--faint); font-size:11px; font-family:var(--mono); }
+  .row { display:flex; gap:7px; }
+  select,button,input {
+    font:inherit; color:var(--text); background:var(--card);
+    border:1px solid var(--line2); border-radius:7px; padding:8px 11px;
   }
-  aside {
-    width: 420px; flex: none; background: var(--panel);
-    border-left: 1px solid var(--line); display: flex; flex-direction: column;
-  }
-  header { padding: 14px 16px; border-bottom: 1px solid var(--line); }
-  h1 { margin: 0 0 10px; font-size: 15px; letter-spacing: .3px; }
-  .row { display: flex; gap: 6px; }
-  select, button, input {
-    font: inherit; color: var(--text); background: #1b202b;
-    border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px;
-  }
-  button { cursor: pointer; }
-  button.primary { background: var(--accent); color: #06101f; border-color: var(--accent); font-weight: 600; }
-  button:disabled { opacity: .5; cursor: default; }
-  #goalbar { padding: 12px 16px; border-bottom: 1px solid var(--line); }
-  .lbl { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .8px; }
-  .goal-title { font-size: 17px; font-weight: 600; color: var(--goal); }
-  #current { padding: 12px 16px; border-bottom: 1px solid var(--line); }
-  .cur-title { font-size: 18px; font-weight: 600; }
-  #links { overflow-y: auto; flex: 1; padding: 6px 8px; }
-  .link {
-    display: flex; align-items: center; gap: 9px; width: 100%;
-    padding: 7px 9px; border: 0; background: transparent; border-radius: 6px;
-    text-align: left; cursor: pointer; color: var(--text);
-  }
-  .link:hover { background: #1d2330; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-  .link .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .meta { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
-  .closer { color: var(--start); }
-  .further { color: #7c8494; }
-  #trailbox { padding: 10px 16px; border-top: 1px solid var(--line); max-height: 130px; overflow-y: auto; }
-  .crumb { color: var(--dim); font-size: 12px; }
-  .crumb b { color: var(--text); font-weight: 500; }
-  #result { padding: 16px; border-top: 1px solid var(--line); display: none; }
-  .verdict { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
-  .optimal { color: var(--dim); font-size: 12px; margin-top: 8px; }
-  .optimal span { color: var(--accent); }
-  #search { width: 100%; margin-top: 8px; }
-  .hit { padding: 6px 9px; cursor: pointer; border-radius: 6px; }
-  .hit:hover { background: #1d2330; }
-  .empty { color: var(--dim); padding: 16px; }
+  input::placeholder { color:var(--faint); }
+  button { cursor:pointer; transition:background .12s, border-color .12s; }
+  button:hover:not(:disabled) { background:#1d2432; border-color:#3c465e; }
+  button.primary { background:var(--accent); color:#04201c; border-color:var(--accent); font-weight:650; }
+  button.primary:hover:not(:disabled) { background:#7bf3e0; border-color:#7bf3e0; }
+  button.ghost { background:transparent; }
+  button:disabled { opacity:.42; cursor:default; }
+  #search { width:100%; margin-top:8px; }
+
+  /* from / to */
+  .ends { padding:13px 17px; border-bottom:1px solid var(--line); display:flex; flex-direction:column; gap:9px; }
+  .end { display:flex; gap:11px; align-items:flex-start; }
+  .pin { width:11px; height:11px; border-radius:50%; margin-top:6px; flex:none;
+         box-shadow:0 0 0 3px rgba(255,255,255,.05); }
+  .pin.from { background:var(--from); }
+  .pin.to { background:var(--to); }
+  .end .lbl { color:var(--faint); font-size:10px; letter-spacing:1.3px; text-transform:uppercase; }
+  .end .val { font-size:17px; font-weight:640; line-height:1.25; }
+  .end .val.to { color:var(--to); }
+  .end .sub { color:var(--dim); font-size:11px; font-family:var(--mono); }
+  .rail { border-left:2px dotted var(--line2); height:12px; margin-left:5px; }
+
+  /* links */
+  #links { overflow-y:auto; flex:1; padding:7px 9px; }
+  .link { display:flex; align-items:center; gap:10px; width:100%; padding:8px 10px;
+          border:0; background:transparent; border-radius:7px; text-align:left;
+          color:var(--text); font:inherit; }
+  .link:hover:not(:disabled) { background:#1a2130; }
+  .link:disabled { opacity:.44; cursor:not-allowed; }
+  .dot { width:9px; height:9px; border-radius:50%; flex:none; }
+  .link .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tag { font-size:10.5px; font-family:var(--mono); color:var(--faint); }
+  .tag.closer { color:var(--from); }
+  .tag.further { color:#69718a; }
+  .tag.lock { color:var(--locked); }
+  .empty { color:var(--dim); padding:22px 16px; text-align:center; }
+
+  /* footer */
+  footer { border-top:1px solid var(--line); padding:10px 17px 12px; }
+  #trail { color:var(--dim); font-size:11.5px; max-height:56px; overflow-y:auto; margin-bottom:9px; }
+  #trail b { color:var(--text); font-weight:500; }
+
+  /* result */
+  #result { position:absolute; inset:0; background:rgba(7,9,16,.93); display:none;
+            place-items:center; backdrop-filter:blur(3px); z-index:5; }
+  .sheet { background:var(--panel); border:1px solid var(--line2); border-radius:14px;
+           padding:26px 28px; width:min(460px,88%); box-shadow:0 24px 70px rgba(0,0,0,.6); }
+  .verdict { font-size:25px; font-weight:750; letter-spacing:-.4px; }
+  .score { font-family:var(--mono); font-size:13px; color:var(--dim); margin-top:5px; }
+  .score b { color:var(--text); }
+  #squares { font-size:21px; letter-spacing:3px; margin:14px 0 4px; }
+  .routebox { margin:16px 0 6px; }
+  .routebox .lbl { color:var(--faint); font-size:10px; letter-spacing:1.3px;
+                   text-transform:uppercase; margin-bottom:7px; }
+  .step { display:flex; align-items:center; gap:10px; padding:3px 0; }
+  .step .n { width:19px; height:19px; border-radius:50%; flex:none; background:var(--card);
+             border:1px solid var(--line2); font:600 10px/18px var(--mono);
+             text-align:center; color:var(--dim); }
+  .step .t { font-size:13px; }
+  .step.hit .n { background:var(--accent); color:#04201c; border-color:var(--accent); }
+  .note { color:var(--faint); font-size:11px; margin-top:12px; }
 </style>
 </head>
 <body>
 
-<div id="map-pane">
+<div id="stage">
   <canvas id="cv"></canvas>
-  <div id="hud">
-    <div><b id="clicks">0</b> clicks &middot; par <b id="par">?</b> &middot; <b id="time">0:00</b></div>
-    <div class="meta" id="mapmeta"></div>
+
+  <div id="hud" class="glass">
+    <div class="big"><span id="clicks">0</span> clicks<i>/</i><span id="par">?</span> par<i>·</i><span id="time">0:00</span></div>
+    <div class="sub" id="mapmeta"></div>
   </div>
+
+  <div id="zoomer" class="glass">
+    <button id="zin" title="Zoom in">+</button>
+    <button id="zout" title="Zoom out">&minus;</button>
+    <button id="zfit" title="Fit whole map" style="font-size:11px">fit</button>
+  </div>
+
+  <div id="legend" class="glass">
+    <div><span class="k" style="background:var(--from)"></span><b>From</b>
+         &nbsp; <span class="k" style="background:var(--to)"></span><b>Goal</b>
+         &nbsp; <span class="k" style="background:var(--trail)"></span><b>Your route</b></div>
+    <div style="margin-top:5px">Dots are articles, coloured by community.
+      <b>closer</b>/<b>further</b> compare a link&rsquo;s straight-line distance
+      to the goal on this map &mdash; a hint, not the answer.</div>
+  </div>
+
   <div id="nomap">
-    <div>
-      <p><b>No map layout yet.</b></p>
-      <p>The race works without it, but the trajectory view needs
-      <code>nodes.parquet</code>.<br>Run <code>python python/01_graph_compute.py</code>.</p>
+    <div><p><b>No map layout yet.</b></p>
+    <p>The race still works; the trajectory view needs <code>nodes.parquet</code>.<br>
+    Run <code>python python/01_graph_compute.py</code>.</p></div>
+  </div>
+
+  <div id="result">
+    <div class="sheet">
+      <div class="verdict" id="verdict"></div>
+      <div class="score" id="score"></div>
+      <div id="squares"></div>
+      <div class="routebox"><div class="lbl" id="routelbl"></div><div id="route"></div></div>
+      <div class="row" style="margin-top:16px">
+        <button class="primary" id="share" style="flex:1">Copy result</button>
+        <button id="again" style="flex:1">New race</button>
+      </div>
+      <div class="note" id="note"></div>
     </div>
   </div>
 </div>
 
 <aside>
   <header>
-    <h1>WIKI RACE</h1>
+    <div class="brand"><h1>WIKI RACE</h1><span id="pnum"></span></div>
     <div class="row">
-      <select id="difficulty">
+      <select id="difficulty" style="flex:1">
         <option value="easy">Easy &mdash; no bans</option>
         <option value="medium">Medium &mdash; hubs banned</option>
         <option value="hard" selected>Hard &mdash; mega-hubs banned</option>
       </select>
-      <button class="primary" id="new">New race</button>
+      <button class="primary" id="new">Random</button>
     </div>
-    <div class="row" style="margin-top:6px">
+    <div class="row" style="margin-top:7px">
       <button id="daily" style="flex:1">&#9733; Today&rsquo;s challenge</button>
     </div>
-    <input id="search" placeholder="&hellip;or search an article to start from">
+    <input id="search" placeholder="Search an article to jump there&hellip;">
     <div id="hits"></div>
   </header>
 
-  <div id="goalbar">
-    <div class="lbl">Get to</div>
-    <div class="goal-title" id="goal">&mdash;</div>
-  </div>
-
-  <div id="current">
-    <div class="lbl">You are at</div>
-    <div class="cur-title" id="cur">&mdash;</div>
-    <div class="meta" id="curmeta"></div>
+  <div class="ends">
+    <div class="end">
+      <div class="pin from"></div>
+      <div style="min-width:0">
+        <div class="lbl">You are at</div>
+        <div class="val" id="cur">&mdash;</div>
+        <div class="sub" id="curmeta"></div>
+      </div>
+    </div>
+    <div class="rail"></div>
+    <div class="end">
+      <div class="pin to"></div>
+      <div style="min-width:0">
+        <div class="lbl">Get to</div>
+        <div class="val to" id="goal">&mdash;</div>
+        <div class="sub" id="goalmeta"></div>
+      </div>
+    </div>
   </div>
 
   <div id="links"><div class="empty">Start a race to see links.</div></div>
 
-  <div id="trailbox"><div class="crumb" id="trail"></div></div>
-
-  <div id="result">
-    <div class="verdict" id="verdict"></div>
-    <div class="meta" id="verdictsub"></div>
-    <div id="squares" style="font-size:19px;letter-spacing:2px;margin:8px 0"></div>
-    <div class="row"><button class="primary" id="share">Copy result</button></div>
-    <div class="optimal" id="optimal"></div>
-  </div>
+  <footer>
+    <div id="trail"></div>
+    <div class="row">
+      <button class="ghost" id="back" style="flex:1" disabled>&larr; Back</button>
+      <button class="ghost" id="giveup" style="flex:1" disabled>Give up</button>
+    </div>
+  </footer>
 </aside>
 
 <script>
 const $ = id => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d');
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const mmss = ms => { const s = Math.floor(ms/1000);
+  return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`; };
 
-let META = null, MAP = null, VIEW = null, TICK = null;
+let META=null, MAP=null, LAND=null, TICK=null;
+// cam is where we are; target is where we want to be. Every frame eases one
+// toward the other, so the view glides after each hop instead of snapping.
+let cam={x:0,y:0,s:1}, target={x:0,y:0,s:1}, dragging=null;
+
 const blank = () => ({
-  goal: null, cur: null, trail: [], par: null, ban: null, done: false,
-  // steps[i] is true when click i moved us closer to the goal on the map.
-  // This is what the share card's squares encode: a spoiler-free shape of
-  // the route that reveals no article names.
-  steps: [], started: null, elapsed: 0, number: null, difficulty: 'easy',
+  goal:null, cur:null, trail:[], steps:[], par:null, ban:null,
+  done:false, started:null, elapsed:0, number:null, difficulty:'easy', share:'',
 });
 let state = blank();
 
-const mmss = ms => {
-  const s = Math.floor(ms / 1000);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-};
-
-function startClock() {
-  stopClock();
-  state.started = performance.now();
-  TICK = setInterval(() => {
-    if (state.done) return;
-    $('time').textContent = mmss(performance.now() - state.started);
-  }, 500);
-}
-function stopClock() { if (TICK) { clearInterval(TICK); TICK = null; } }
-
-// Distinct hues per community. Communities are integers with no inherent
-// order, so a hash spreads neighbours apart instead of giving them near
-// identical colours.
-const hue = c => ((c * 2654435761) >>> 0) % 360;
-const colorOf = c => c == null ? '#5b6478' : `hsl(${hue(c)},62%,58%)`;
-
-async function api(path, opts) {
-  const r = await fetch(path, opts);
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+async function api(p, o) {
+  const r = await fetch(p, o);
+  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error || r.statusText);
   return r.json();
 }
 
-// ---------- map ----------
-function fitView() {
-  if (!META || !META.bounds) return;
-  const [x0, y0, x1, y1] = META.bounds;
-  const w = cv.width, h = cv.height, pad = 30;
-  const s = Math.min((w - 2 * pad) / Math.max(x1 - x0, 1e-6),
-                     (h - 2 * pad) / Math.max(y1 - y0, 1e-6));
-  VIEW = { s, ox: (w - (x1 - x0) * s) / 2 - x0 * s, oy: (h - (y1 - y0) * s) / 2 - y0 * s };
+/* ---------------- map ---------------- */
+const hue = c => ((c * 2654435761) >>> 0) % 360;
+const colorOf = c => c == null ? '#5b6478' : `hsl(${hue(c)},58%,60%)`;
+
+const px = x => (x - cam.x) * cam.s + cv.width / 2;
+// Canvas y grows downward and the layout's does not, so flip.
+const py = y => cv.height / 2 - (y - cam.y) * cam.s;
+
+function fitTo(pts, pad = 1.35) {
+  if (!pts.length) return;
+  let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+  for (const p of pts) { x0=Math.min(x0,p.x); y0=Math.min(y0,p.y); x1=Math.max(x1,p.x); y1=Math.max(y1,p.y); }
+  const w = Math.max(x1-x0, 40), h = Math.max(y1-y0, 40);
+  target = { x:(x0+x1)/2, y:(y0+y1)/2,
+             s: Math.min(cv.width/(w*pad), cv.height/(h*pad)) };
 }
-const px = x => x * VIEW.s + VIEW.ox;
-// Canvas y grows downward; the layout's does not, so flip to keep the map
-// oriented the way the PNG export renders it.
-const py = y => cv.height - (y * VIEW.s + VIEW.oy);
+function fitAll() {
+  if (!META || !META.bounds) return;
+  const [x0,y0,x1,y1] = META.bounds;
+  fitTo([{x:x0,y:y0},{x:x1,y:y1}], 1.08);
+}
 
 function resize() {
-  const r = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
-  cv.width = Math.max(1, r.width * d); cv.height = Math.max(1, r.height * d);
-  fitView(); draw();
+  const r = cv.getBoundingClientRect(), d = Math.min(window.devicePixelRatio||1, 2);
+  cv.width = Math.max(1, r.width*d); cv.height = Math.max(1, r.height*d);
+  if (!cam.s || cam.s === 1) { fitAll(); cam = {...target}; }
 }
 
-function draw() {
-  if (!VIEW) return;
-  ctx.fillStyle = '#0b0d12'; ctx.fillRect(0, 0, cv.width, cv.height);
+function frame(t) {
+  // Ease toward the target view.
+  cam.x += (target.x-cam.x)*.12; cam.y += (target.y-cam.y)*.12;
+  cam.s += (target.s-cam.s)*.12;
+  draw(t);
+  requestAnimationFrame(frame);
+}
+
+function draw(t) {
+  ctx.fillStyle = '#070910'; ctx.fillRect(0,0,cv.width,cv.height);
+  if (!META) return;
+
   if (MAP) {
-    for (let i = 0; i < MAP.x.length; i++) {
-      ctx.fillStyle = colorOf(MAP.c[i]);
-      ctx.globalAlpha = .40;
-      ctx.fillRect(px(MAP.x[i]), py(MAP.y[i]), 1.6, 1.6);
+    // Additive blending makes dense regions glow rather than flatten out,
+    // which is what gives the map visible structure.
+    ctx.globalCompositeOperation = 'lighter';
+    const r = Math.max(.9, Math.min(2.6, cam.s*1.6));
+    for (let i=0;i<MAP.x.length;i++) {
+      const X = px(MAP.x[i]), Y = py(MAP.y[i]);
+      if (X<-20||Y<-20||X>cv.width+20||Y>cv.height+20) continue;
+      ctx.fillStyle = colorOf(MAP.c[i]); ctx.globalAlpha = .30;
+      ctx.beginPath(); ctx.arc(X,Y,r,0,7); ctx.fill();
     }
-    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
   }
+
+  if (LAND) {
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font = `600 ${Math.round(11*Math.min(2,Math.max(1,cam.s*.9)))}px ui-sans-serif, system-ui`;
+    for (const l of LAND) {
+      const X=px(l.x), Y=py(l.y);
+      if (X<0||Y<0||X>cv.width||Y>cv.height) continue;
+      ctx.lineWidth=3.5; ctx.strokeStyle='rgba(7,9,16,.92)';
+      ctx.strokeText(l.title, X, Y);
+      ctx.fillStyle='rgba(232,236,244,.72)'; ctx.fillText(l.title, X, Y);
+    }
+  }
+
   const pts = state.trail.filter(a => a.x != null);
   if (pts.length > 1) {
-    ctx.strokeStyle = 'rgba(251,191,36,.85)'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(px(pts[0].x), py(pts[0].y));
-    for (const p of pts.slice(1)) ctx.lineTo(px(p.x), py(p.y));
-    ctx.stroke();
-    for (const p of pts.slice(1, -1)) marker(p, '#fbbf24', 3);
+    ctx.save();
+    ctx.shadowColor='rgba(251,191,36,.75)'; ctx.shadowBlur=10;
+    ctx.strokeStyle='rgba(251,191,36,.95)'; ctx.lineWidth=2.2;
+    ctx.lineJoin='round'; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(px(pts[0].x),py(pts[0].y));
+    for (const p of pts.slice(1)) ctx.lineTo(px(p.x),py(p.y));
+    ctx.stroke(); ctx.restore();
+    for (const p of pts.slice(1,-1)) mark(p,'#fbbf24',3);
   }
-  if (pts.length) marker(pts[0], getComputedStyle(document.body).getPropertyValue('--start'), 6);
-  if (state.goal && state.goal.x != null) marker(state.goal, '#f87171', 7, true);
-  const c = state.cur;
-  if (c && c.x != null) marker(c, '#ffffff', 5);
+  if (pts.length) mark(pts[0],'#4ade80',6,'From');
+  if (state.goal && state.goal.x!=null) {
+    const pulse = 8 + Math.sin((t||0)/380)*3;
+    mark(state.goal,'#fb7185',6,'Goal',pulse);
+  }
+  if (state.cur && state.cur.x!=null) mark(state.cur,'#ffffff',5);
 }
 
-function marker(p, color, r, ring) {
-  ctx.beginPath(); ctx.arc(px(p.x), py(p.y), r, 0, 7);
-  ctx.fillStyle = color; ctx.fill();
-  if (ring) {
-    ctx.beginPath(); ctx.arc(px(p.x), py(p.y), r + 6, 0, 7);
-    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
+function mark(p, color, r, label, ring) {
+  const X=px(p.x), Y=py(p.y);
+  ctx.save();
+  if (ring) { ctx.beginPath(); ctx.arc(X,Y,ring,0,7);
+    ctx.strokeStyle=color; ctx.globalAlpha=.55; ctx.lineWidth=1.6; ctx.stroke(); ctx.globalAlpha=1; }
+  ctx.shadowColor=color; ctx.shadowBlur=12;
+  ctx.beginPath(); ctx.arc(X,Y,r,0,7); ctx.fillStyle=color; ctx.fill();
+  ctx.restore();
+  if (label) {
+    ctx.font='700 10px ui-sans-serif, system-ui'; ctx.textAlign='center';
+    ctx.lineWidth=3; ctx.strokeStyle='rgba(7,9,16,.9)';
+    ctx.strokeText(label.toUpperCase(), X, Y-r-8);
+    ctx.fillStyle=color; ctx.fillText(label.toUpperCase(), X, Y-r-8);
   }
 }
 
-// ---------- game ----------
-const dist = (a, b) =>
-  (a && b && a.x != null && b.x != null) ? Math.hypot(a.x - b.x, a.y - b.y) : null;
+/* ---------------- game ---------------- */
+const dist = (a,b) => (a&&b&&a.x!=null&&b.x!=null) ? Math.hypot(a.x-b.x,a.y-b.y) : null;
 
-async function go(id) {
-  const d = await api('/api/article/' + id);
-  const prev = state.cur;
-  if (prev) {
-    const before = dist(prev, state.goal), after = dist(d, state.goal);
-    state.steps.push(before != null && after != null ? after < before : null);
+function startClock() {
+  stopClock(); state.started = performance.now();
+  TICK = setInterval(() => { if (!state.done) $('time').textContent = mmss(performance.now()-state.started); }, 500);
+}
+function stopClock(){ if (TICK) { clearInterval(TICK); TICK=null; } }
+
+async function go(id, isBack) {
+  const q = new URLSearchParams();
+  if (state.ban != null) q.set('ban_degree', state.ban);
+  if (state.goal) q.set('goal', state.goal.id);
+  const d = await api(`/api/article/${id}?${q}`);
+
+  if (!isBack) {
+    const prev = state.cur;
+    if (prev) {
+      const b = dist(prev,state.goal), a = dist(d,state.goal);
+      state.steps.push(b!=null && a!=null ? a<b : null);
+    }
+    state.trail.push(d);
   }
   state.cur = d;
-  state.trail.push(d);
-  $('cur').textContent = d.title;
-  $('curmeta').textContent = `${d.links.length.toLocaleString()} outgoing links · ${d.in_degree.toLocaleString()} inbound`;
-  $('clicks').textContent = Math.max(0, state.trail.length - 1);
-  $('trail').innerHTML = state.trail.map(a => `<b>${esc(a.title)}</b>`).join(' &rsaquo; ');
-  $('trailbox').scrollTop = 1e6;
 
-  if (state.goal && d.id === state.goal.id) return finish();
+  const clicks = Math.max(0, state.trail.length-1);
+  $('cur').textContent = d.title;
+  $('curmeta').textContent =
+    `${d.links.length.toLocaleString()} links out · ${d.in_degree.toLocaleString()} in`;
+  $('clicks').textContent = clicks;
+  $('clicks').className = state.par!=null && clicks>state.par ? 'par-over' : 'par-ok';
+  $('trail').innerHTML = state.trail.map(a=>`<b>${esc(a.title)}</b>`).join(' &rsaquo; ');
+  $('trail').scrollTop = 1e6;
+  $('back').disabled = state.trail.length < 2;
+  $('giveup').disabled = !state.goal || state.done;
+
+  if (state.goal && d.id === state.goal.id) return finish(true);
   renderLinks(d);
-  draw();
+  const focus = state.trail.filter(a=>a.x!=null);
+  if (state.goal && state.goal.x!=null) focus.push(state.goal);
+  fitTo(focus);
 }
 
 function renderLinks(d) {
   const box = $('links');
   if (!d.links.length) {
-    box.innerHTML = '<div class="empty">Dead end &mdash; no outgoing links. Back up.</div>';
+    box.innerHTML = `<div class="empty">Dead end &mdash; nothing links out of here.<br>
+      Use <b>&larr; Back</b> to return.</div>`;
     return;
   }
   const here = dist(d, state.goal);
-  const links = d.links.slice().sort((a, b) => {
-    // Spatially closer to the goal first when we have a map; that is the
-    // whole point of racing on top of a layout. Falls back to importance.
-    const da = dist(a, state.goal), db = dist(b, state.goal);
-    if (da != null && db != null) return da - db;
-    return b.in_degree - a.in_degree;
+  const links = d.links.slice().sort((a,b) => {
+    if (!!a.banned !== !!b.banned) return a.banned ? 1 : -1;
+    const da = dist(a,state.goal), db = dist(b,state.goal);
+    if (da!=null && db!=null) return da-db;
+    return b.in_degree-a.in_degree;
   });
-  box.innerHTML = '';
+  const frag = document.createDocumentFragment();
   for (const l of links) {
-    const dl = dist(l, state.goal);
-    const closer = (here != null && dl != null) ? dl < here : null;
+    const dl = dist(l,state.goal);
+    const closer = (here!=null && dl!=null) ? dl<here : null;
     const el = document.createElement('button');
-    el.className = 'link';
+    el.className='link'; el.disabled = !!l.banned;
+    if (l.banned) el.title = `Banned at this difficulty: ${l.in_degree.toLocaleString()} inbound links`;
     el.innerHTML =
-      `<span class="dot" style="background:${colorOf(l.community)}"></span>` +
-      `<span class="name">${esc(l.title)}</span>` +
-      (closer === null ? '' :
-        `<span class="meta ${closer ? 'closer' : 'further'}">${closer ? '&#9660; closer' : '&#9650; further'}</span>`) +
-      `<span class="meta">${l.in_degree.toLocaleString()}</span>`;
-    el.onclick = () => go(l.id);
-    box.appendChild(el);
+      `<span class="dot" style="background:${l.banned?'var(--locked)':colorOf(l.community)}"></span>`+
+      `<span class="name">${esc(l.title)}</span>`+
+      (l.banned ? `<span class="tag lock">&#128274; hub</span>`
+        : closer===null ? '' :
+          `<span class="tag ${closer?'closer':'further'}">${closer?'&#9660;':'&#9650;'}</span>`)+
+      `<span class="tag">${l.in_degree.toLocaleString()}</span>`;
+    if (!l.banned) el.onclick = () => go(l.id);
+    frag.appendChild(el);
   }
-  box.scrollTop = 0;
+  box.innerHTML=''; box.appendChild(frag); box.scrollTop=0;
 }
 
-async function finish() {
+function routeHtml(path, mine) {
+  const set = new Set(mine.map(a=>a.id));
+  return path.map((a,i) =>
+    `<div class="step${set.has(a.id)?' hit':''}"><div class="n">${i}</div>`+
+    `<div class="t">${esc(a.title)}</div></div>`).join('');
+}
+
+async function finish(won) {
   state.done = true;
-  state.elapsed = state.started ? performance.now() - state.started : 0;
+  state.elapsed = state.started ? performance.now()-state.started : 0;
   stopClock();
-  const clicks = state.trail.length - 1;
-  $('links').innerHTML = '';
-  $('result').style.display = 'block';
-  const par = state.par;
-  $('verdict').textContent =
-    clicks === par ? 'Optimal!' : clicks <= par + 1 ? 'Nice.' : 'Made it.';
-  // Clicks lead, time breaks ties: clicks is the score only we can compute a
-  // par for, and ranking on time alone would reward fast clicking over
-  // knowing how things connect.
-  $('verdictsub').textContent = `${clicks} clicks (par ${par}) · ${mmss(state.elapsed)}`;
-  const sq = state.steps.map(s => s === null ? '⬜' : s ? '🟩' : '🟥');
-  $('squares').textContent = sq.join('');
-  state.share =
-    (state.number ? `Wiki Race #${state.number}` : 'Wiki Race') +
-    ` (${state.difficulty})\n${clicks} clicks · par ${par} · ${mmss(state.elapsed)}\n` +
-    sq.join('');
+  $('giveup').disabled = true;
+  const clicks = state.trail.length-1, par = state.par;
+
+  $('verdict').textContent = !won ? 'Gave up'
+    : clicks===par ? 'Optimal!' : clicks<=par+1 ? 'Nice.' : 'Made it.';
+  $('score').innerHTML = won
+    ? `<b>${clicks}</b> clicks &nbsp;·&nbsp; par <b>${par}</b> &nbsp;·&nbsp; <b>${mmss(state.elapsed)}</b>`
+    : `par was <b>${par}</b>`;
+
+  const sq = state.steps.map(s => s===null?'⬜':s?'🟩':'🟥');
+  $('squares').textContent = won ? sq.join('') : '';
+  state.share = (state.number?`Wiki Race #${state.number}`:'Wiki Race')+
+    ` (${state.difficulty})\n`+
+    (won ? `${clicks} clicks · par ${par} · ${mmss(state.elapsed)}\n${sq.join('')}` : `gave up · par ${par}`);
+
+  $('routelbl').textContent = 'A shortest route';
+  $('route').innerHTML = '<div class="empty">finding&hellip;</div>';
+  $('note').textContent = state.ban
+    ? `Hard mode: routes through articles with more than ${state.ban.toLocaleString()} inbound links were banned for both you and the optimal route.`
+    : '';
+  $('result').style.display='grid';
+
   try {
-    const p = await api('/api/path', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ from: state.trail[0].id, to: state.goal.id, ban_degree: state.ban })
-    });
+    const p = await api('/api/path', { method:'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify({ from: state.trail[0].id, to: state.goal.id, ban_degree: state.ban }) });
     if (p.found) {
-      $('optimal').innerHTML = 'Shortest route: ' +
-        p.path.map(a => `<span>${esc(a.title)}</span>`).join(' &rsaquo; ');
-    }
-  } catch (e) { $('optimal').textContent = ''; }
+      // "A" shortest route, not "the": ties are common in a graph this dense
+      // and we return whichever the bidirectional search met on.
+      $('route').innerHTML = routeHtml(p.path, state.trail);
+      $('routelbl').textContent = `A shortest route (${p.clicks} clicks)`;
+    } else $('route').innerHTML = '<div class="empty">no route exists</div>';
+  } catch { $('route').innerHTML=''; }
   draw();
 }
 
 async function startRace(endpoint) {
-  $('new').disabled = $('daily').disabled = true;
-  $('result').style.display = 'none';
+  for (const b of ['new','daily']) $(b).disabled = true;
+  $('result').style.display='none';
   try {
-    const d = $('difficulty').value;
-    const p = await api(`${endpoint}?difficulty=${d}`);
+    const diff = $('difficulty').value;
+    const p = await api(`${endpoint}?difficulty=${diff}`);
     state = blank();
-    Object.assign(state, {
-      goal: p.goal, par: p.optimal, ban: p.ban_degree,
-      number: p.number ?? null, difficulty: p.difficulty || d,
-    });
+    Object.assign(state, { goal:p.goal, par:p.optimal, ban:p.ban_degree,
+      number:p.number??null, difficulty:p.difficulty||diff });
     $('goal').textContent = p.goal.title;
+    $('goalmeta').textContent = `${p.goal.in_degree.toLocaleString()} inbound links`;
     $('par').textContent = p.optimal;
     $('time').textContent = '0:00';
+    $('pnum').textContent = p.number ? `#${p.number}` : '';
     await go(p.start.id);
     startClock();
-  } catch (e) {
+  } catch(e) {
     $('links').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
-  } finally { $('new').disabled = $('daily').disabled = false; }
+  } finally { for (const b of ['new','daily']) $(b).disabled = false; }
 }
-const newRace = () => startRace('/api/puzzle');
 
-const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+/* ---------------- controls ---------------- */
+$('new').onclick   = () => startRace('/api/puzzle');
+$('again').onclick = () => startRace('/api/puzzle');
+$('daily').onclick = () => startRace('/api/daily');
+$('giveup').onclick = () => { if (state.goal && !state.done) finish(false); };
+$('back').onclick = () => {
+  if (state.trail.length < 2) return;
+  state.trail.pop(); state.steps.pop();
+  go(state.trail[state.trail.length-1].id, true);
+};
+$('zin').onclick  = () => { target.s *= 1.5; };
+$('zout').onclick = () => { target.s /= 1.5; };
+$('zfit').onclick = fitAll;
 
-// ---------- search ----------
-let timer = null;
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  target.s *= e.deltaY < 0 ? 1.12 : 1/1.12;
+}, { passive:false });
+cv.addEventListener('pointerdown', e => { dragging={x:e.clientX,y:e.clientY}; cv.classList.add('drag'); cv.setPointerCapture(e.pointerId); });
+cv.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const d = Math.min(window.devicePixelRatio||1,2);
+  target.x -= (e.clientX-dragging.x)*d/cam.s;
+  target.y += (e.clientY-dragging.y)*d/cam.s;
+  cam.x = target.x; cam.y = target.y;      // drag should feel direct, not eased
+  dragging = {x:e.clientX,y:e.clientY};
+});
+for (const ev of ['pointerup','pointercancel'])
+  cv.addEventListener(ev, () => { dragging=null; cv.classList.remove('drag'); });
+
+$('share').onclick = async () => {
+  const b = $('share');
+  try {
+    // navigator.clipboard needs a secure context; a plain http:// LAN address
+    // is not one, so fall back rather than failing silently.
+    if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(state.share);
+    else { const ta=document.createElement('textarea'); ta.value=state.share;
+           ta.style.cssText='position:fixed;opacity:0'; document.body.appendChild(ta);
+           ta.select(); document.execCommand('copy'); ta.remove(); }
+    b.textContent='Copied!';
+  } catch { b.textContent='Press Ctrl+C'; }
+  setTimeout(()=>{ b.textContent='Copy result'; }, 1600);
+};
+
+let timer=null;
 $('search').addEventListener('input', e => {
   clearTimeout(timer);
   const q = e.target.value.trim();
-  if (!q) { $('hits').innerHTML = ''; return; }
-  // Debounced: search is a linear scan of every title on the server.
-  timer = setTimeout(async () => {
-    const hits = await api('/api/search?limit=8&q=' + encodeURIComponent(q));
-    $('hits').innerHTML = '';
+  if (!q) { $('hits').innerHTML=''; return; }
+  timer = setTimeout(async () => {            // debounced: server-side full scan
+    const hits = await api('/api/search?limit=8&q='+encodeURIComponent(q));
+    $('hits').innerHTML='';
     for (const h of hits) {
-      const el = document.createElement('div');
-      el.className = 'hit';
-      el.innerHTML = `${esc(h.title)} <span class="meta">${h.in_degree.toLocaleString()}</span>`;
-      el.onclick = () => {
-        $('hits').innerHTML = ''; $('search').value = '';
-        if (!state.goal) { $('links').innerHTML = '<div class="empty">Start a race first, then search to jump.</div>'; return; }
-        // Jumping restarts the run from the chosen article: clear the trail
-        // and the step record together, or the share squares would describe
-        // hops that are no longer on the board.
-        state.trail = []; state.steps = []; state.cur = null;
-        state.done = false; $('result').style.display = 'none';
+      const el=document.createElement('div'); el.className='hit';
+      el.style.cssText='padding:6px 9px;cursor:pointer;border-radius:6px';
+      el.onmouseenter=()=>el.style.background='#1a2130';
+      el.onmouseleave=()=>el.style.background='';
+      el.innerHTML=`${esc(h.title)} <span class="tag">${h.in_degree.toLocaleString()}</span>`;
+      el.onclick=()=>{
+        $('hits').innerHTML=''; $('search').value='';
+        if (!state.goal) return;
+        // Jumping restarts the run: clear trail and step record together, or
+        // the share squares would describe hops no longer on the board.
+        state.trail=[]; state.steps=[]; state.cur=null; state.done=false;
+        $('result').style.display='none';
         go(h.id).then(startClock);
       };
       $('hits').appendChild(el);
@@ -369,38 +562,21 @@ $('search').addEventListener('input', e => {
   }, 220);
 });
 
-$('new').onclick = newRace;
-$('daily').onclick = () => startRace('/api/daily');
-$('share').onclick = async () => {
-  const btn = $('share');
-  try {
-    // navigator.clipboard needs a secure context, which plain http://host:port
-    // is not — so fall back rather than silently failing on a LAN address.
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(state.share);
-    } else {
-      const ta = document.createElement('textarea');
-      ta.value = state.share; ta.style.position = 'fixed'; ta.style.opacity = '0';
-      document.body.appendChild(ta); ta.select();
-      document.execCommand('copy'); ta.remove();
-    }
-    btn.textContent = 'Copied!';
-  } catch { btn.textContent = 'Press Ctrl+C'; }
-  setTimeout(() => { btn.textContent = 'Copy result'; }, 1600);
-};
 window.addEventListener('resize', resize);
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'Backspace') { e.preventDefault(); $('back').click(); }
+});
 
-(async function init() {
+(async function init(){
   META = await api('/api/meta');
   $('mapmeta').textContent =
     `${META.articles.toLocaleString()} articles · ${META.edges.toLocaleString()} links`;
   if (META.has_map) {
-    MAP = await api('/api/map?n=40000');
-  } else {
-    $('nomap').style.display = 'grid';
-  }
-  resize();
-  newRace();
+    [MAP, LAND] = await Promise.all([api('/api/map?n=45000'), api('/api/landmarks?n=45')]);
+  } else { $('nomap').style.display='grid'; $('legend').style.display='none'; }
+  resize(); requestAnimationFrame(frame);
+  startRace('/api/daily');
 })();
 </script>
 </body>
