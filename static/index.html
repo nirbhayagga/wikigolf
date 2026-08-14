@@ -161,6 +161,11 @@
       <div class="verdict" id="verdict"></div>
       <div class="score" id="score"></div>
       <div id="squares"></div>
+      <div class="row" style="margin-top:14px">
+        <input id="nick" placeholder="nickname" maxlength="20" style="flex:1">
+        <button id="post">Submit score</button>
+      </div>
+      <div class="score" id="posted" style="margin-top:7px"></div>
       <div class="routebox"><div class="lbl" id="routelbl"></div><div id="route"></div></div>
       <div class="row" style="margin-top:16px">
         <button class="primary" id="share" style="flex:1">Copy result</button>
@@ -233,7 +238,7 @@ let META=null, MAP=null, LAND=null, TICK=null;
 let cam={x:0,y:0,s:1}, target={x:0,y:0,s:1}, dragging=null;
 
 const blank = () => ({
-  goal:null, cur:null, trail:[], steps:[], par:null, ban:null,
+  goal:null, cur:null, trail:[], steps:[], par:null, ban:null, run:null,
   done:false, started:null, elapsed:0, number:null, difficulty:'easy', share:'',
 });
 let state = blank();
@@ -448,6 +453,12 @@ async function finish(won) {
     ` (${state.difficulty})\n`+
     (won ? `${clicks} clicks · par ${par} · ${mmss(state.elapsed)}\n${sq.join('')}` : `gave up · par ${par}`);
 
+  // Only a completed run can be submitted, and only the server decides
+  // whether it counts.
+  $('post').disabled = !won;
+  $('posted').textContent = '';
+  $('nick').value = localStorage.getItem('wr-nick') || '';
+
   $('routelbl').textContent = 'A shortest route';
   $('route').innerHTML = '<div class="empty">finding&hellip;</div>';
   $('note').textContent = state.ban
@@ -476,7 +487,7 @@ async function startRace(endpoint) {
     const diff = $('difficulty').value;
     const p = await api(`${endpoint}?difficulty=${diff}`);
     state = blank();
-    Object.assign(state, { goal:p.goal, par:p.optimal, ban:p.ban_degree,
+    Object.assign(state, { goal:p.goal, par:p.optimal, ban:p.ban_degree, run:p.run,
       number:p.number??null, difficulty:p.difficulty||diff });
     $('goal').textContent = p.goal.title;
     $('goalmeta').textContent = `${p.goal.in_degree.toLocaleString()} inbound links`;
@@ -519,6 +530,25 @@ cv.addEventListener('pointermove', e => {
 });
 for (const ev of ['pointerup','pointercancel'])
   cv.addEventListener(ev, () => { dragging=null; cv.classList.remove('drag'); });
+
+$('post').onclick = async () => {
+  const nick = $('nick').value.trim();
+  localStorage.setItem('wr-nick', nick);
+  $('post').disabled = true;
+  try {
+    // The server is sent the route, not the score. It re-walks every hop on
+    // its own graph and times the run on its own clock.
+    const r = await api('/api/submit', { method:'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify({ run: state.run, path: state.trail.map(a=>a.id), nickname: nick }) });
+    $('posted').innerHTML = r.rank
+      ? `Accepted &mdash; rank <b>#${r.rank}</b> on this board.`
+      : 'Accepted.';
+  } catch (e) {
+    $('posted').textContent = `Rejected: ${e.message}`;
+    $('post').disabled = false;
+  }
+};
 
 $('share').onclick = async () => {
   const b = $('share');
