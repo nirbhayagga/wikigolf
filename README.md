@@ -146,10 +146,14 @@ cargo build --release
 ./target/release/wiki-parser data/dumps/enwiki-20260801-pages-articles-multistream.xml.bz2 --out data
 
 # 2. Environment (RAPIDS must come from mamba, not pip)
-bash scripts/setup-gpu-env.sh   # one conda solve; see the script for the raw command
+# One line on purpose: pasting a backslash-continued command mangles it.
+mamba create -n rapids-env -c rapidsai -c conda-forge -c nvidia rapids=24.04 python=3.11 cuda-version=12.2 python-igraph pyyaml tqdm datashader holoviews bokeh colorcet panel pillow -y
 mamba activate rapids-env
 pip install google-genai            # the only dep not on conda-forge
 export KVIKIO_COMPAT_MODE=ON        # Fedora: disable GPU Direct Storage
+
+# Already have a working rapids-env? Check rather than rebuild:
+python -c "import cudf,cugraph,rmm,cupy,numpy,pandas,pyarrow,scipy,yaml; print('ok')"
 
 # 3. Compute
 python python/01_graph_compute.py

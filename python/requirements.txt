@@ -14,7 +14,10 @@
 #   pip install google-genai      # the only dep not on conda-forge
 #   export KVIKIO_COMPAT_MODE=ON  # Fedora: disable GPU Direct Storage
 #
-# Or just run: bash scripts/setup-gpu-env.sh
+# Already have a working rapids-env? Do not rebuild it — check instead:
+#   python -c "import cudf,cugraph,rmm,cupy,numpy,pandas,pyarrow,scipy,yaml; print('ok')"
+# and add anything missing with:
+#   mamba install -n rapids-env -c conda-forge <package> -y
 #
 # rapids=24.04 is pinned deliberately. _layout_gpu depends on cuGraph
 # internals (from_cudf_adjlist, graph_properties.directed, and a monkey-patch
