@@ -24,6 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use wiki_parser::game::{Difficulty, Game, Rng};
 use wiki_parser::graph::PathFinder;
+use wiki_parser::identity::Identity;
 use wiki_parser::ratelimit::RateLimiter;
 use wiki_parser::runs::{Registry, RunSpec};
 
@@ -45,6 +46,12 @@ struct Args {
     /// per-IP rate limiting entirely.
     #[arg(long)]
     trust_proxy: bool,
+
+    /// Mark the identity cookie Secure. Enable when served over HTTPS; a
+    /// Secure cookie is never sent over plain http, so setting it during
+    /// local development silently breaks identity.
+    #[arg(long)]
+    secure_cookies: bool,
 }
 
 /// Pathfinder scratch space is ~72 MB per instance at enwiki scale, so it is
@@ -61,7 +68,13 @@ struct App {
     /// that mutates the leaderboard.
     rl_heavy: RateLimiter,
     trust_proxy: bool,
+    identity: Identity,
+    secure_cookies: bool,
 }
+
+/// The player id resolved from a request's cookie, attached by middleware.
+#[derive(Clone)]
+struct Player(String);
 
 impl App {
     fn with_finder<T>(&self, f: impl FnOnce(&Game, &mut PathFinder) -> T) -> T {
@@ -98,6 +111,40 @@ fn client_ip(app: &App, req: &Request, peer: IpAddr) -> IpAddr {
         }
     }
     peer
+}
+
+/// Resolve or mint the player identity, then hand it to the handlers.
+///
+/// A cookie that fails verification is treated as absent and replaced, so a
+/// tampered or stale value cannot impersonate anyone — it just becomes a new
+/// anonymous player.
+async fn identify(State(app): State<Shared>, mut req: Request, next: Next) -> Response {
+    let existing = req
+        .headers()
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(Identity::from_header)
+        .and_then(|c| app.identity.verify(c));
+
+    let (player, issue) = match existing {
+        Some(id) => (id, None),
+        None => match app.identity.issue() {
+            Ok(cookie) => {
+                let id = app.identity.verify(&cookie).unwrap_or_default();
+                (id, Some(cookie))
+            }
+            Err(_) => (String::new(), None),
+        },
+    };
+
+    req.extensions_mut().insert(Player(player));
+    let mut res = next.run(req).await;
+    if let Some(cookie) = issue {
+        if let Ok(v) = Identity::cookie_header(&cookie, app.secure_cookies).parse() {
+            res.headers_mut().append(header::SET_COOKIE, v);
+        }
+    }
+    res
 }
 
 async fn rate_limit(
@@ -449,10 +496,14 @@ fn issue(
     }
 }
 
-async fn submit(State(s): State<Shared>, Json(req): Json<SubmitRequest>) -> impl IntoResponse {
+async fn submit(
+    State(s): State<Shared>,
+    axum::Extension(Player(player)): axum::Extension<Player>,
+    Json(req): Json<SubmitRequest>,
+) -> impl IntoResponse {
     let out = tokio::task::spawn_blocking(move || {
         s.runs
-            .submit(&s.game.graph, req.run, &req.path, &req.nickname)
+            .submit(&s.game.graph, req.run, &req.path, &req.nickname, &player)
             .map_err(|e| e.message(&s.game.graph))
     })
     .await;
@@ -592,10 +643,12 @@ async fn main() -> Result<()> {
     let state = Arc::new(App {
         game,
         finders: Mutex::new(Vec::new()),
-        runs: Registry::default(),
+        runs: Registry::open(&args.data)?,
         rl_read: RateLimiter::new(READ_BURST, READ_PER_SEC),
         rl_heavy: RateLimiter::new(HEAVY_BURST, HEAVY_PER_SEC),
         trust_proxy: args.trust_proxy,
+        identity: Identity::load_or_create(&args.data)?,
+        secure_cookies: args.secure_cookies,
     });
 
     let app = Router::new()
@@ -610,6 +663,9 @@ async fn main() -> Result<()> {
         .route("/api/landmarks", get(landmarks))
         .route("/api/submit", post(submit))
         .route("/api/leaderboard", get(leaderboard))
+        // Layers run outermost-last, so rate limiting is checked before we
+        // bother minting an identity for a request we are about to refuse.
+        .layer(middleware::from_fn_with_state(state.clone(), identify))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
         .with_state(state);
 
