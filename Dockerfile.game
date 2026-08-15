@@ -24,6 +24,10 @@ RUN mkdir -p src/bin \
  && cargo build --release --bin serve \
  && rm -rf src target/release/deps/serve* target/release/serve*
 
+# static/ is a BUILD dependency, not a runtime one: serve.rs embeds the page
+# with include_str!("../../static/index.html"), so it has to be present here or
+# the compile fails. Nothing reads it at runtime.
+COPY static ./static
 COPY src ./src
 # Touch so cargo does not mistake the real sources for the stub's fingerprint.
 RUN touch src/lib.rs src/bin/serve.rs && cargo build --release --bin serve
@@ -36,8 +40,10 @@ RUN apt-get update \
 # Unprivileged: the server only ever reads the data mount.
 RUN useradd --system --uid 10001 --create-home wikirace
 WORKDIR /app
+# The binary is fully self-contained — the page is baked into it by
+# include_str! at compile time, so there is no static/ to ship. A consequence
+# worth knowing: editing static/index.html requires a rebuild, not a restart.
 COPY --from=build /src/target/release/serve /usr/local/bin/serve
-COPY static ./static
 
 # The secret backing the signed identity cookie is persisted next to the
 # working directory, so /app must be writable by the service user even though
