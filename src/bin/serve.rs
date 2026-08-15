@@ -644,13 +644,33 @@ async fn daily(
 
 async fn map_points(
     State(s): State<Shared>,
+    headers: header::HeaderMap,
     Query(q): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let n = q
         .get("n")
         .and_then(|v| v.parse().ok())
         .unwrap_or(20_000usize)
-        .min(120_000);
+        .min(wiki_parser::game::MAP_POINTS);
+
+    // This is the heaviest response the service sends — the client asks for
+    // 45,000 points, which is ~1.8 MB — and it is byte-identical for every
+    // visitor until the next dump. The graph's shape identifies that version,
+    // so a revalidation costs a 304 and no body instead of another 1.8 MB.
+    let etag = format!(
+        "\"{}-{}-{}\"",
+        s.game.graph.len(),
+        s.game.graph.forward.edges(),
+        n
+    );
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(',').any(|t| t.trim() == etag))
+    {
+        return (StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response();
+    }
+
     let pts = tokio::task::spawn_blocking(move || s.game.map_sample(n))
         .await
         .unwrap_or_default();
@@ -665,9 +685,13 @@ async fn map_points(
         cs.push(c);
     }
     (
-        [(header::CACHE_CONTROL, "public, max-age=3600")],
+        [
+            (header::CACHE_CONTROL, "public, max-age=86400".to_string()),
+            (header::ETAG, etag),
+        ],
         Json(serde_json::json!({ "x": xs, "y": ys, "c": cs })),
     )
+        .into_response()
 }
 
 async fn landmarks(

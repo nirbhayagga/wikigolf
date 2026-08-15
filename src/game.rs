@@ -126,10 +126,20 @@ pub struct Game {
     /// so the hub slider can name what it excludes without re-ranking 7.2M
     /// articles on every drag.
     hubs: Vec<u32>,
+    /// The top MAP_POINTS articles by in-degree, ranked once at load. The map
+    /// is identical for every visitor and changes only with the dump, so it is
+    /// computed here rather than rebuilt on each request.
+    map_order: Vec<u32>,
 }
 
 /// How deep the hub ranking goes; the slider cannot exclude more than this.
 pub const MAX_HUBS: usize = 50_000;
+
+/// The most points the map endpoint will ever return, and so the size of the
+/// precomputed ranking behind it. Every extra point is ~10 bytes on the wire
+/// and one more thing to draw each frame; past this the map is a solid mass
+/// and the cost buys nothing.
+pub const MAP_POINTS: usize = 120_000;
 
 /// A generated race.
 pub struct Puzzle {
@@ -220,7 +230,24 @@ impl Game {
         }
         hubs.sort_unstable_by_key(|&v| std::cmp::Reverse(graph.reverse.degree(v)));
 
-        Ok(Game { graph, layout, playable, hubs })
+        // The map's point order, ranked once here rather than per request.
+        //
+        // map_sample used to build a 7.2M-element Vec and partially sort it on
+        // every call — roughly 29 MB of allocation and a pass over every
+        // article for each page load, when the answer is identical for every
+        // visitor and never changes until the next dump. MAP_POINTS caps what
+        // the endpoint can ever be asked for, so this slice covers all of it.
+        let mut map_order: Vec<u32> = (0..graph.len() as u32).collect();
+        let m = MAP_POINTS.min(map_order.len());
+        if m < map_order.len() {
+            map_order.select_nth_unstable_by_key(m - 1, |&v| {
+                std::cmp::Reverse(graph.reverse.degree(v))
+            });
+            map_order.truncate(m);
+        }
+        map_order.shrink_to_fit();
+
+        Ok(Game { graph, layout, playable, hubs, map_order })
     }
 
     /// The in-degree limit that excludes roughly the top `n` articles, with a
@@ -399,14 +426,10 @@ impl Game {
         let Some(l) = self.layout.as_ref() else {
             return Vec::new();
         };
-        let mut ids: Vec<u32> = (0..self.graph.len() as u32).collect();
-        let k = limit.min(ids.len());
-        ids.select_nth_unstable_by_key(k.saturating_sub(1), |&v| {
-            std::cmp::Reverse(self.graph.reverse.degree(v))
-        });
-        ids.truncate(k);
-        ids.into_iter()
-            .map(|v| (l.x[v as usize], l.y[v as usize], l.community[v as usize]))
+        let k = limit.min(self.map_order.len());
+        self.map_order[..k]
+            .iter()
+            .map(|&v| (l.x[v as usize], l.y[v as usize], l.community[v as usize]))
             .collect()
     }
 }
