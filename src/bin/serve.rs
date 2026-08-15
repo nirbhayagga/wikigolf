@@ -483,8 +483,29 @@ async fn puzzle(
 
     // Player-chosen endpoints. Both must be given; one alone is ambiguous
     // enough that failing loudly beats guessing which half to generate.
-    let from = q.get("from").and_then(|v| v.parse::<u32>().ok());
-    let to = q.get("to").and_then(|v| v.parse::<u32>().ok());
+    //
+    // Titles get their own parameter names rather than being accepted by
+    // `from`/`to`. Overloading one parameter would be genuinely ambiguous:
+    // articles are titled "1941", so a bare `from=1941` could mean the year or
+    // the article with that id, and guessing wrong sends the player somewhere
+    // plausible and wrong. Titles are what share links carry, since they
+    // survive a dump refresh and dense ids do not.
+    let by_title = |key: &str| {
+        q.get(key)
+            .map(|t| s.game.graph.resolve(t).ok_or_else(|| t.clone()))
+    };
+    let (from_t, to_t) = (by_title("from_title"), by_title("to_title"));
+    for r in [&from_t, &to_t] {
+        if let Some(Err(name)) = r {
+            return err(&format!("no article called \"{name}\"")).into_response();
+        }
+    }
+    let from = from_t
+        .and_then(|r| r.ok())
+        .or_else(|| q.get("from").and_then(|v| v.parse::<u32>().ok()));
+    let to = to_t
+        .and_then(|r| r.ok())
+        .or_else(|| q.get("to").and_then(|v| v.parse::<u32>().ok()));
     if from.is_some() || to.is_some() {
         let (Some(a), Some(b)) = (from, to) else {
             return err("a custom race needs both from and to").into_response();
