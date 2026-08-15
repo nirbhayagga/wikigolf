@@ -13,8 +13,14 @@
 # Environment (a .env file next to this one works):
 #   RACE_HOST         required — the hostname Traefik should route
 #   TRAEFIK_NETWORK   the external network Traefik watches (default: traefik)
-#   CERT_RESOLVER     your Traefik ACME resolver name    (default: le)
+#   ENTRYPOINT        Traefik's https entrypoint name    (default: websecure)
 #   DATA_DIR          where the parquet lives            (default: ./data)
+#   CERT_RESOLVER     only for a public deploy — see the certresolver label
+#
+# Local wildcard setup (*.local.example.com), which is what this defaults to:
+#   RACE_HOST=race.local.example.com
+#   TRAEFIK_NETWORK=traefik
+#   ENTRYPOINT=websecure
 
 services:
   game:
@@ -81,8 +87,16 @@ services:
     labels:
       - traefik.enable=true
       - traefik.http.routers.wikirace.rule=Host(`${RACE_HOST}`)
-      - traefik.http.routers.wikirace.entrypoints=websecure
-      - traefik.http.routers.wikirace.tls.certresolver=${CERT_RESOLVER:-le}
+      - traefik.http.routers.wikirace.entrypoints=${ENTRYPOINT:-websecure}
+      # tls=true with no certresolver: serve whatever certificate Traefik
+      # already holds for this host. That is what a pre-loaded wildcard
+      # (*.local.example.com) needs — pointing an ACME resolver at a LAN
+      # hostname makes Traefik attempt a challenge that cannot succeed.
+      - traefik.http.routers.wikirace.tls=true
+      # PUBLIC DEPLOY: uncomment this and set CERT_RESOLVER to your ACME
+      # resolver name, or Traefik serves its self-signed default certificate
+      # and every visitor gets a browser warning.
+      # - traefik.http.routers.wikirace.tls.certresolver=${CERT_RESOLVER:-le}
       - traefik.http.services.wikirace.loadbalancer.server.port=8080
       # Explicit, because Traefik guesses wrong when a container is attached to
       # more than one network.
