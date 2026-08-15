@@ -11,6 +11,7 @@ import os
 import sys
 import time
 
+import numpy as np
 import pandas as pd
 
 import colorcet as cc
@@ -39,6 +40,14 @@ def main():
                     default=exp.get("max_categories", MAX_CATEGORIES))
     ap.add_argument("--output", default=None)
     ap.add_argument("--data-dir", default=None, help="override pipeline.data_dir")
+    ap.add_argument("--percentile", type=float, default=0.4,
+                    help="frame between this and (100-this) percentile of coords, "
+                         "so outliers and the fragment ring cannot dominate")
+    ap.add_argument("--how", default="eq_hist",
+                    choices=["eq_hist", "log", "cbrt", "linear"])
+    ap.add_argument("--min-alpha", type=int, default=180)
+    ap.add_argument("--max-px", type=int, default=3, help="dynspread max radius")
+    ap.add_argument("--no-spread", action="store_true")
     args = ap.parse_args()
 
     paths = Paths(args.data_dir or cfg["pipeline"]["data_dir"])
@@ -80,12 +89,38 @@ def main():
     )
     print(f"   {len(sizes):,} communities → {len(cats)} categories")
 
-    cvs = ds.Canvas(plot_width=args.width, plot_height=args.height)
+    # Frame on a percentile, not on min/max.
+    #
+    # The layout deliberately parks disconnected fragments on an outer ring, and
+    # a few weakly-attached articles sit far out too. Letting those set the
+    # bounds spent ~96% of the frame on 0.5% of the articles and rendered the
+    # actual map as a smudge. Percentile bounds are also generically safer: any
+    # future layout with outliers gets framed sensibly without special-casing.
+    x, y = nodes["x"].to_numpy(), nodes["y"].to_numpy()
+    lo, hi = args.percentile, 100 - args.percentile
+    xr = (np.percentile(x, lo), np.percentile(x, hi))
+    yr = (np.percentile(y, lo), np.percentile(y, hi))
+    pad = 0.02 * max(xr[1] - xr[0], yr[1] - yr[0])
+    xr = (xr[0] - pad, xr[1] + pad)
+    yr = (yr[0] - pad, yr[1] + pad)
+    shown = ((x >= xr[0]) & (x <= xr[1]) & (y >= yr[0]) & (y <= yr[1])).sum()
+    print(f"   framing {shown:,} of {len(nodes):,} points "
+          f"({100 * shown / len(nodes):.1f}%) at the {lo}-{hi} percentile")
+
+    cvs = ds.Canvas(plot_width=args.width, plot_height=args.height,
+                    x_range=xr, y_range=yr)
     agg = cvs.points(nodes, "x", "y", agg=ds.count_cat("label"))
 
-    palette = cc.glasbey_dark
+    # glasbey_light, not glasbey_dark: these are dark colours on a black
+    # background, which is why the first renders looked washed out.
+    palette = cc.glasbey_light
     color_key = {c: palette[i % len(palette)] for i, c in enumerate(cats)}
-    img = tf.set_background(tf.shade(agg, color_key=color_key, min_alpha=100), "black")
+    img = tf.shade(agg, color_key=color_key, how=args.how, min_alpha=args.min_alpha)
+    if not args.no_spread:
+        # Most pixels hold 0-1 points at this density, so isolated articles
+        # render as invisible single pixels without spreading.
+        img = tf.dynspread(img, threshold=0.35, max_px=args.max_px)
+    img = tf.set_background(img, "black")
 
     pil = img.to_pil()
     pil.save(output, "PNG")

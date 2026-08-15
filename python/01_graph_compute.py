@@ -359,7 +359,189 @@ def _place_within_communities(mem, deg, centres, n, nc):
     return coords
 
 
-def _layout_cpu(u, v, n, cfg):
+def _layout_sfdp(u, v, n, mem, cfg, paths=None):
+    """SFDP layout via graph-tool — the replacement for cuGraph's ForceAtlas2.
+
+    cugraph.force_atlas2 is a legacy algorithm on cuGraph's old C++ API and
+    segfaults against modern NVIDIA drivers (verified on a 4080 / driver 580:
+    it dies inside cuCtxGetDevice on a *five vertex* graph, so it is not a
+    scale or VRAM problem). SFDP is Hu's multilevel force-directed algorithm:
+    actively maintained C++, coarsens like FA2 does, and needs no GPU at all,
+    which removes this pipeline's last driver dependency.
+
+    Communities are deliberately NOT fed in as layout groups — see the note
+    at the sfdp_layout call. They are for colour, not geometry.
+    """
+    import graph_tool.all as gt
+
+    # The layout is the expensive step by orders of magnitude — hours at
+    # enwiki scale. Cache its raw output the moment it exists, so a bug in the
+    # cheap post-processing below costs a rerun of the post-processing, not of
+    # the layout. (Learned the hard way: a GraphView indexing mistake threw
+    # away a completed 12-minute run.)
+    raw_cache = os.path.join(paths.data_dir, "cache_sfdp_raw.npz") if paths else None
+    if raw_cache and os.path.exists(raw_cache):
+        z = np.load(raw_cache)
+        if len(z["in_giant"]) == n:
+            print(f"-> Reusing raw SFDP positions from {raw_cache}")
+            bb = z["backbone"] if z["backbone"].size else None
+            return _sfdp_place(z["raw"], z["in_giant"], z["labels"], n,
+                               bb, z["u"], z["v"])
+        print(f"   (ignoring {raw_cache}: built for a different graph)")
+
+    print(f"   [CPU] Building graph-tool graph ({n:,} vertices, {len(u):,} edges)...")
+    t = time.time()
+    g = gt.Graph(directed=False)
+    g.add_vertex(n)
+    # add_edge_list takes the (E, 2) array directly; no Python-level loop.
+    g.add_edge_list(np.column_stack([u, v]))
+    print(f"   built in {elapsed(t)}")
+
+    # Lay out the giant component ONLY.
+    #
+    # A force layout applies no attraction *between* disconnected components,
+    # so it flings the small ones arbitrarily far and squashes everything real
+    # into a dot: measured on simplewiki, 99% of articles landed within 55
+    # units while stragglers reached 1,400, leaving the actual map occupying
+    # 3.9% of the frame. This is the same failure `_normalize_centres` exists
+    # to prevent, and the same fix — lay out what is connected, then place the
+    # fragments deliberately.
+    # Optional backbone mode: lay out only the highest-PageRank articles, then
+    # place everything else at the centroid of its already-placed neighbours.
+    #
+    # Measured on simplewiki: a 10% backbone finished in 105s against 2,304s
+    # for the full graph — 22x — and rendered *more* legibly, because the
+    # backbone carries the community structure while the long tail of stubs
+    # only blurs it. One propagation round placed 250k of 284k articles.
+    #
+    # It is an approximation, not a force layout: tail articles sit at the
+    # average of their neighbours rather than finding their own equilibrium.
+    frac = float(cfg["layout"].get("backbone_frac", 0.0) or 0.0)
+    backbone = None
+    if 0.0 < frac < 1.0 and paths is not None and os.path.exists(paths.cache_metrics):
+        pr = pd.read_parquet(paths.cache_metrics)["pagerank"].to_numpy()
+        k = max(2, int(n * frac))
+        backbone = np.zeros(n, dtype=bool)
+        backbone[np.argpartition(pr, -k)[-k:]] = True
+        keep_e = backbone[u] & backbone[v]
+        print(f"   [CPU] Backbone mode: top {k:,} by PageRank ({100*frac:.0f}%), "
+              f"{keep_e.sum():,} induced edges ({100*keep_e.mean():.1f}% of all)")
+        g.clear_edges()
+        g.add_edge_list(np.column_stack([u[keep_e], v[keep_e]]))
+
+    comp, _ = gt.label_components(g)
+    labels = np.asarray(comp.a)
+    counts = np.bincount(labels, weights=backbone if backbone is not None else None)
+    giant = int(counts.argmax())
+    in_giant = labels == giant
+    if backbone is not None:
+        in_giant &= backbone
+    print(
+        f"   [CPU] {len(counts):,} components; laying out the giant one "
+        f"({in_giant.sum():,} articles, {100 * in_giant.mean():.1f}%)"
+    )
+
+    vfilt = g.new_vertex_property("bool")
+    vfilt.a = in_giant
+    gv = gt.GraphView(g, vfilt=vfilt)
+
+    # No `groups=`. Feeding Leiden membership in as group attraction sounds
+    # helpful and is not: graph-tool also applies inter-group *repulsion*, which
+    # shatters a single connected component into isolated islands floating in
+    # blank space. A map wants one landmass with regions in it, and the link
+    # structure alone already produces that — communities are for colour, not
+    # for geometry.
+    threads = gt.openmp_get_num_threads() if gt.openmp_enabled() else 1
+    print(f"   [CPU] SFDP (multilevel, OpenMP threads={threads})...")
+    with run_with_timer("SFDP layout"):
+        pos = gt.sfdp_layout(gv, multilevel=True, verbose=False)
+
+    # get_2d_array on a GraphView returns ONLY the vertices the view keeps, in
+    # ascending underlying-index order — not an array of size n. Map it back
+    # explicitly rather than indexing with the mask.
+    raw = np.asarray(pos.get_2d_array([0, 1]), dtype=np.float64).T
+    del g, gv, pos
+    gc.collect()
+
+    if raw_cache:
+        np.savez(raw_cache, raw=raw, in_giant=in_giant, labels=labels,
+                 backbone=backbone if backbone is not None else np.zeros(0, bool),
+                 u=u, v=v)
+        print(f"   raw positions cached -> {raw_cache}")
+    return _sfdp_place(raw, in_giant, labels, n, backbone, u, v)
+
+
+def _sfdp_place(raw, in_giant, labels, n, backbone=None, u=None, v=None):
+    """Normalize SFDP output onto the canvas and ring the fragments.
+
+    Split out from the layout itself so it can be re-run from the raw cache.
+    """
+    giant_idx = np.flatnonzero(in_giant)
+    if len(raw) != len(giant_idx):
+        raise SystemExit(
+            f"SFDP returned {len(raw):,} positions for {len(giant_idx):,} "
+            "giant-component vertices — graph-tool's GraphView ordering changed"
+        )
+
+    coords = np.zeros((n, 2), dtype=np.float32)
+    pts = raw - np.median(raw, axis=0)
+    # Scale on a high percentile, not the extremes: even within one component
+    # a handful of weakly-attached articles sit far out, and letting them set
+    # the scale shrinks everything else.
+    scale = np.percentile(np.hypot(pts[:, 0], pts[:, 1]), 99.5)
+    pts = pts / max(scale, 1e-9) * (CANVAS * 0.5)
+
+    # Scaling on a percentile sets the scale right but does not bound the tail:
+    # a handful of weakly-attached articles can still sit an order of magnitude
+    # further out and blow up the frame again. Pull anything past the limit
+    # back along its own radius — direction is preserved, only the extreme tail
+    # is compressed, and nothing escapes into the fragment ring.
+    LIMIT = CANVAS * 0.55
+    r = np.hypot(pts[:, 0], pts[:, 1])
+    far = r > LIMIT
+    if far.any():
+        pts[far] *= (LIMIT / r[far])[:, None]
+        print(f"   clamped {far.sum():,} outlying articles to the canvas edge")
+    coords[giant_idx] = pts.astype(np.float32)
+
+    # Fragments go on an outer ring, grouped so a component stays together.
+    # Backbone mode: propagate the unplaced tail onto the laid-out backbone
+    # before ringing whatever is still unreachable.
+    if backbone is not None:
+        import scipy.sparse as sp
+
+        placed = in_giant.copy()
+        A = sp.csr_matrix((np.ones(len(u), np.float32), (u, v)), shape=(n, n))
+        for rnd in range(4):
+            if placed.all():
+                break
+            cnt = A @ placed.astype(np.float32)
+            sx = A @ (coords[:, 0] * placed)
+            sy = A @ (coords[:, 1] * placed)
+            newly = (~placed) & (cnt > 0)
+            if not newly.any():
+                break
+            coords[newly, 0] = sx[newly] / cnt[newly]
+            coords[newly, 1] = sy[newly] / cnt[newly]
+            placed |= newly
+            print(f"   propagation round {rnd + 1}: placed {newly.sum():,}, "
+                  f"{int((~placed).sum()):,} left")
+        del A
+        gc.collect()
+        in_giant = placed
+
+    rest = np.flatnonzero(~in_giant)
+    if len(rest):
+        order = np.argsort(labels[rest], kind="stable")
+        rest = rest[order]
+        ang = np.arange(len(rest)) * 2.39996323  # golden angle
+        r = CANVAS * 0.62 + (np.arange(len(rest)) % 7) * (CANVAS * 0.012)
+        coords[rest, 0] = r * np.cos(ang)
+        coords[rest, 1] = r * np.sin(ang)
+    return coords
+
+
+def _layout_cpu(u, v, n, cfg, paths=None):
     """CPU layout by coarsening: Leiden first, then lay out the community graph.
 
     Running DRL or FR directly on the full graph is not viable — on 7.3M
@@ -396,7 +578,12 @@ def _layout_cpu(u, v, n, cfg):
     del part
     gc.collect()
 
-    method = cfg["layout"].get("cpu_method", "coarsened")
+    method = cfg["layout"].get("cpu_method", "sfdp")
+    if method == "sfdp":
+        del g
+        gc.collect()
+        return _layout_sfdp(u, v, n, mem, cfg, paths), mem
+
     if method in ("drl", "fr"):
         print(f"   [CPU] Direct {method.upper()} layout on the full graph...")
         with run_with_timer(f"{method.upper()} layout"):
@@ -470,7 +657,7 @@ def phase2_layout(paths, cfg, n, sample_ratio):
             free_gpu_memory()
     if coords is None:
         log_phase("Phase 2: Layout + Communities (CPU / igraph)")
-        coords, memberships = _layout_cpu(u, v, n, cfg)
+        coords, memberships = _layout_cpu(u, v, n, cfg, paths)
 
     del u, v
     gc.collect()

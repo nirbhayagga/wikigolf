@@ -28,7 +28,8 @@ DEFAULTS = {
         "algorithm": "fa2",
         "max_iter": 500,
         "lin_log": False,
-        "cpu_method": "coarsened",
+        "cpu_method": "sfdp",
+        "backbone_frac": 0.10,
     },
     "community": {"objective": "modularity", "resolution": 1.0, "top_n": 20},
     "gemini": {"model": "gemini-2.5-flash", "rate_limit_sleep": 5},
@@ -131,6 +132,7 @@ CACHE_KEYS = [
     ("layout", "max_iter"),
     ("layout", "lin_log"),
     ("layout", "cpu_method"),
+    ("layout", "backbone_frac"),
 ]
 
 
