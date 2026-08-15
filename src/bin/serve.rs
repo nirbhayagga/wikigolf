@@ -801,3 +801,58 @@ async fn main() -> Result<()> {
     .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod page_tests {
+    /// The UI is embedded at compile time, so a bad edit to static/index.html
+    /// cannot fail the build — it ships, and the page silently loses features.
+    ///
+    /// This is not hypothetical: a slice-based edit here once deleted the whole
+    /// custom-race picker along with the link filter and sort handlers, and
+    /// everything compiled, tested and deployed green. These are the handlers
+    /// the page does not work without.
+    #[test]
+    fn page_keeps_its_handlers() {
+        let page = include_str!("../../static/index.html");
+        for needle in [
+            "function attachPicker",
+            "attachPicker('cfrom'",
+            "attachPicker('cto'",
+            "$('cgo').onclick",
+            "function paintLinks",
+            "$('lfilter').addEventListener",
+            "$('lsort').addEventListener",
+            "function setVeil",
+            "$('veilbtn').onclick",
+            "$('pause').onclick",
+            "$('share').onclick",
+            "$('copylink').onclick",
+            "$('new').onclick",
+            "$('daily').onclick",
+        ] {
+            assert!(page.contains(needle), "static/index.html lost: {needle}");
+        }
+    }
+
+    /// Every id the script reaches for with $() must exist in the markup.
+    #[test]
+    fn every_referenced_id_exists() {
+        let page = include_str!("../../static/index.html");
+        let ids: Vec<&str> = page
+            .match_indices("id=\"")
+            .map(|(i, _)| {
+                let rest = &page[i + 4..];
+                &rest[..rest.find('"').unwrap_or(0)]
+            })
+            .collect();
+        for (i, _) in page.match_indices("$('") {
+            let rest = &page[i + 3..];
+            let Some(end) = rest.find('\'') else { continue };
+            let name = &rest[..end];
+            if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                continue;
+            }
+            assert!(ids.contains(&name), "$('{name}') has no matching id in the markup");
+        }
+    }
+}
