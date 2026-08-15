@@ -104,7 +104,16 @@
   .rail { border-left:2px dotted var(--line2); height:12px; margin-left:5px; }
 
   /* links */
+  #linkwrap { position:relative; flex:1; min-height:0; display:flex; }
   #links { overflow-y:auto; flex:1; padding:7px 9px; }
+  /* Opaque, not translucent: the veil exists to make the options unreadable,
+     so anything you could squint through would defeat it. */
+  #veil { position:absolute; inset:0; display:none; place-items:center; z-index:3;
+          background:var(--panel); text-align:center; padding:24px; }
+  #veil .vt { font-size:19px; font-weight:700; letter-spacing:-.2px; }
+  #veil .vs { color:var(--dim); font-size:13px; margin:7px 0 16px; }
+  #veil .vs b { color:var(--text); }
+  #veil button { min-width:170px; }
   .link { display:flex; align-items:center; gap:10px; width:100%; padding:8px 10px;
           border:0; background:transparent; border-radius:7px; text-align:left;
           color:var(--text); font:inherit; }
@@ -277,12 +286,22 @@
     </div>
   </div>
 
-  <div id="links"><div class="empty">Start a race to see links.</div></div>
+  <div id="linkwrap">
+    <div id="links"><div class="empty">Start a race to see links.</div></div>
+    <div id="veil">
+      <div>
+        <div class="vt" id="veiltitle"></div>
+        <div class="vs" id="veilsub"></div>
+        <button class="primary" id="veilbtn"></button>
+      </div>
+    </div>
+  </div>
 
   <footer>
     <div id="trail"></div>
     <div class="row">
       <button class="ghost" id="back" style="flex:1" disabled>&larr; Back</button>
+      <button class="ghost" id="pause" style="flex:1" disabled>Pause</button>
       <button class="ghost" id="giveup" style="flex:1" disabled>Give up</button>
     </div>
   </footer>
@@ -303,6 +322,7 @@ let cam={x:0,y:0,s:1}, target={x:0,y:0,s:1}, dragging=null;
 const blank = () => ({
   goal:null, cur:null, trail:[], steps:[], par:null, ban:null, run:null,
   done:false, started:null, elapsed:0, number:null, difficulty:'easy', share:'',
+  veil:null, pauseAt:0,
 });
 let state = blank();
 
@@ -416,11 +436,70 @@ function mark(p, color, r, label, ring) {
 /* ---------------- game ---------------- */
 const dist = (a,b) => (a&&b&&a.x!=null&&b.x!=null) ? Math.hypot(a.x-b.x,a.y-b.y) : null;
 
-function startClock() {
-  stopClock(); state.started = performance.now();
-  TICK = setInterval(() => { if (!state.done) $('time').textContent = mmss(performance.now()-state.started); }, 500);
-}
+function startClock() { state.started = performance.now(); runClock(); }
 function stopClock(){ if (TICK) { clearInterval(TICK); TICK=null; } }
+
+/* ---------------- the veil ----------------
+   One mechanism for two states that need the same thing: the clock stopped and
+   the links genuinely out of sight.
+
+   'ready'  — a race is loaded but not begun. The daily used to start its clock
+              during page load, so your first recorded seconds were spent
+              waiting for the map to render.
+   'paused' — mid-race.
+
+   Hiding the links is the substance, not decoration. A pause that leaves the
+   list on screen is not a pause: you can read every option, plan three moves,
+   and resume with the clock none the wiser. */
+function setVeil(mode) {          // 'ready' | 'paused' | null
+  state.veil = mode;
+  $('veil').style.display = mode ? 'grid' : 'none';
+  $('pause').textContent = mode === 'paused' ? 'Resume' : 'Pause';
+  $('pause').disabled = !state.goal || state.done || mode === 'ready';
+  $('back').disabled = !!mode || state.trail.length < 2;
+  $('giveup').disabled = !!mode || !state.goal || state.done;
+  for (const id of ['search','cfrom','cto']) {
+    const el = $(id); if (el) el.disabled = !!mode;
+  }
+  if (mode === 'ready') {
+    $('veiltitle').textContent = 'Ready when you are';
+    $('veilsub').innerHTML = `Get to <b>${esc(state.goal ? state.goal.title : '')}</b>` +
+      (state.par != null ? ` in <b>${state.par}</b> clicks` : '');
+    $('veilbtn').textContent = 'Start race';
+  } else if (mode === 'paused') {
+    $('veiltitle').textContent = 'Paused';
+    $('veilsub').textContent = 'The clock is stopped and the links are hidden.';
+    $('veilbtn').textContent = 'Resume';
+  }
+}
+
+function runClock() {
+  stopClock();
+  TICK = setInterval(() => {
+    if (!state.done && !state.veil) $('time').textContent = mmss(performance.now()-state.started);
+  }, 500);
+}
+
+function unveil() {
+  if (state.veil === 'ready') {
+    state.started = performance.now();   // the race begins here, not at page load
+  } else if (state.veil === 'paused') {
+    // Shift the start forward by the time spent paused, so elapsed stays right
+    // without a second accumulator to keep in step.
+    state.started += performance.now() - state.pauseAt;
+  }
+  setVeil(null);
+  runClock();
+}
+
+$('veilbtn').onclick = unveil;
+$('pause').onclick = () => {
+  if (state.veil === 'paused') { unveil(); return; }
+  if (!state.goal || state.done || state.veil) return;
+  state.pauseAt = performance.now();
+  stopClock();
+  setVeil('paused');
+};
 
 async function go(id, isBack) {
   const q = new URLSearchParams();
@@ -446,8 +525,11 @@ async function go(id, isBack) {
   $('clicks').className = state.par!=null && clicks>state.par ? 'par-over' : 'par-ok';
   $('trail').innerHTML = state.trail.map(a=>`<b>${esc(a.title)}</b>`).join(' &rsaquo; ');
   $('trail').scrollTop = 1e6;
-  $('back').disabled = state.trail.length < 2;
-  $('giveup').disabled = !state.goal || state.done;
+  // !!state.veil: this runs on every navigation, and must not re-enable the
+  // controls the veil deliberately disabled.
+  $('back').disabled = !!state.veil || state.trail.length < 2;
+  $('giveup').disabled = !!state.veil || !state.goal || state.done;
+  $('pause').disabled = !!state.veil || !state.goal || state.done;
 
   if (state.goal && d.id === state.goal.id) return finish(true);
   renderLinks(d);
@@ -507,7 +589,9 @@ async function finish(won) {
   state.done = true;
   state.elapsed = state.started ? performance.now()-state.started : 0;
   stopClock();
+  setVeil(null);
   $('giveup').disabled = true;
+  $('pause').disabled = true;
   const clicks = state.trail.length-1, par = state.par;
 
   $('verdict').textContent = !won ? 'Gave up'
@@ -592,7 +676,9 @@ async function startRace(endpoint, extra) {
     $('time').textContent = '0:00';
     $('pnum').textContent = p.number ? `#${p.number}` : '';
     await go(p.start.id);
-    startClock();
+    // Armed, not started. setVeil('ready') holds the clock at 0:00 until the
+    // player says go — the daily used to begin timing during page load.
+    setVeil('ready');
   } catch(e) {
     $('links').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
     // Rethrown so a caller that has somewhere better to put the message — the
@@ -750,7 +836,7 @@ $('search').addEventListener('input', e => {
         // the share squares would describe hops no longer on the board.
         state.trail=[]; state.steps=[]; state.cur=null; state.done=false;
         $('result').style.display='none';
-        go(h.id).then(startClock);
+        go(h.id).then(() => { setVeil(null); runClock(); });
       };
       $('hits').appendChild(el);
     }
