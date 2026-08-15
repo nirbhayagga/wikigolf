@@ -101,8 +101,15 @@ services:
       # Explicit, because Traefik guesses wrong when a container is attached to
       # more than one network.
       - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
-    # Loading 231.7M edges into CSR needs ~4 GB and about a minute. Without a
-    # limit a memory spike takes the host down instead of the container.
+    # Loading 231.7M edges into CSR needs ~4 GB and about a minute (measured:
+    # 3.79 GB resident once up). Without a limit a memory spike takes the host
+    # down instead of the container.
+    #
+    # On a VM, give the VM at least 6 GB — 8 is comfortable. This limit cannot
+    # protect anything if the VM itself has less than the limit: the kernel OOM
+    # killer takes the process first, and it looks like an unexplained restart
+    # loop rather than an error. The image build wants another 2-3 GB on top,
+    # so a 4 GB VM typically dies during `cargo build`, before it ever serves.
     deploy:
       resources:
         limits:
