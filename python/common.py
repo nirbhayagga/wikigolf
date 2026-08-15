@@ -79,6 +79,7 @@ class Paths:
         self.manifest = j("manifest.json")
         self.cache_metrics = j("cache_metrics.parquet")
         self.cache_layout = j("cache_layout.parquet")
+        self.sfdp_raw = j("cache_sfdp_raw.npz")
 
         # Final outputs
         self.nodes = j("nodes.parquet")
@@ -87,7 +88,17 @@ class Paths:
 
     @property
     def caches(self):
-        return [self.manifest, self.cache_metrics, self.cache_layout, self.nodes]
+        return [self.manifest, self.cache_metrics, self.cache_layout, self.nodes,
+                self.sfdp_raw]
+
+    @property
+    def layout_caches(self):
+        """Everything phase 2 onward owns — deliberately NOT cache_metrics.
+
+        PageRank is expensive and often computed on a different machine than
+        the layout, so re-tuning a layout setting must not throw it away.
+        """
+        return [self.manifest, self.cache_layout, self.nodes, self.sfdp_raw]
 
     @property
     def parser_outputs(self):
@@ -180,8 +191,8 @@ def check_manifest(paths, sample_ratio, cfg=None):
     return current
 
 
-def reset_caches(paths):
-    for p in paths.caches:
+def reset_caches(paths, layout_only=False):
+    for p in (paths.layout_caches if layout_only else paths.caches):
         if os.path.exists(p):
             os.remove(p)
             print(f"   Deleted {p}")
