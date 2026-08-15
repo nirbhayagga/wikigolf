@@ -296,6 +296,36 @@ impl Game {
         None
     }
 
+    /// A race between two articles the player chose, rather than a generated
+    /// pair.
+    ///
+    /// Endpoints are exempt from the hub ban. Picking "United States" as your
+    /// goal is a legitimate race; refusing it because the ban level happens to
+    /// exclude it would look like a bug, and banning the start would make the
+    /// race unstartable. Everything in between is still banned, so par stays
+    /// consistent with what the player is allowed to click.
+    ///
+    /// Returns None when the pair is invalid or no route exists under the ban.
+    pub fn puzzle_between(
+        &self,
+        pf: &mut PathFinder,
+        a: u32,
+        b: u32,
+        ban_degree: Option<usize>,
+    ) -> Option<Puzzle> {
+        let n = self.graph.len() as u32;
+        if a == b || a >= n || b >= n {
+            return None;
+        }
+        let rev = &self.graph.reverse;
+        let banned: Box<dyn Fn(u32) -> bool + '_> = match ban_degree {
+            Some(limit) => Box::new(move |v: u32| v != a && v != b && rev.degree(v) > limit),
+            None => Box::new(|_| false),
+        };
+        let path = pf.shortest_path(&self.graph, a, b, &banned)?;
+        Some(Puzzle { start: a, goal: b, ban_degree, optimal: path.len() - 1 })
+    }
+
     /// Title search over every article, ranked by match quality x popularity.
     ///
     /// A linear scan of 7.2M titles (~100 ms), hence the caller running it off

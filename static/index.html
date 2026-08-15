@@ -26,7 +26,9 @@
 
   /* ---------- map ---------- */
   #stage { flex:1; position:relative; min-width:0; background:radial-gradient(ellipse at 50% 45%, #0e1420 0%, #070910 70%); }
-  canvas { display:block; width:100%; height:100%; cursor:grab; }
+  /* touch-action:none, or the browser claims the gesture to scroll the page
+     and the pointerdown drag never fires on a touchscreen. */
+  canvas { display:block; width:100%; height:100%; cursor:grab; touch-action:none; }
   canvas.drag { cursor:grabbing; }
   .glass {
     position:absolute; background:rgba(13,17,25,.82); border:1px solid var(--line);
@@ -51,7 +53,7 @@
            color:var(--dim); padding:40px; }
 
   /* ---------- panel ---------- */
-  aside { width:432px; flex:none; background:var(--panel); border-left:1px solid var(--line);
+  aside { width:432px; max-width:100%; flex:none; background:var(--panel); border-left:1px solid var(--line);
           display:flex; flex-direction:column; }
   header { padding:15px 17px 13px; border-bottom:1px solid var(--line); }
   .brand { display:flex; align-items:baseline; gap:9px; margin-bottom:12px; }
@@ -70,6 +72,15 @@
   button.ghost { background:transparent; }
   button:disabled { opacity:.42; cursor:default; }
   #search { width:100%; margin-top:8px; }
+  #custom { margin-top:8px; }
+  #custom summary { cursor:pointer; font-size:12px; color:var(--dim); padding:3px 0; }
+  #custom summary:focus-visible { outline:2px solid var(--to); outline-offset:2px; border-radius:4px; }
+  #custom input { width:100%; margin-top:6px; }
+  #custom button { width:100%; margin-top:8px; }
+  #custom .picked { border-color:var(--to); }
+  #cerr { margin-top:6px; min-height:14px; }
+  .hits .hit { padding:6px 9px; cursor:pointer; border-radius:6px; }
+  .hits .hit:hover { background:#1a2130; }
 
   #hubctl { margin-top:11px; }
   .hubhead { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:3px; }
@@ -102,8 +113,6 @@
   .dot { width:9px; height:9px; border-radius:50%; flex:none; }
   .link .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .tag { font-size:10.5px; font-family:var(--mono); color:var(--faint); }
-  .tag.closer { color:var(--from); }
-  .tag.further { color:#69718a; }
   .tag.lock { color:var(--locked); }
   .empty { color:var(--dim); padding:22px 16px; text-align:center; }
 
@@ -131,6 +140,40 @@
   .step .t { font-size:13px; }
   .step.hit .n { background:var(--accent); color:#04201c; border-color:var(--accent); }
   .note { color:var(--faint); font-size:11px; margin-top:12px; }
+
+  /* ---------- narrow screens ----------
+     The desktop layout is a fixed 432px sidebar beside a flexible map. Below
+     roughly a tablet that does not fit: the sidebar alone is wider than a
+     phone, and body{overflow:hidden} means the overflow is simply lost rather
+     than scrollable. Stack instead — map on top with a fixed share of the
+     viewport, panel below taking the rest and scrolling internally. */
+  @media (max-width: 860px) {
+    body { flex-direction:column; }
+    #stage { flex:none; height:38vh; min-height:190px; }
+    aside { width:100%; flex:1 1 auto; min-height:0;
+            border-left:0; border-top:1px solid var(--line); }
+    /* #result lives inside #stage, so it would be trapped in that 38vh strip. */
+    #result { position:fixed; }
+    /* No room for the legend beside the HUD at this width. */
+    #legend { display:none; }
+    #hud { top:8px; left:8px; padding:8px 11px; }
+    #hud .big { font-size:13px; }
+    #zoomer { top:8px; right:8px; }
+  }
+  @media (max-width: 430px) {
+    header { padding:12px 13px 10px; }
+    .ends { padding:10px 13px; }
+    .end .val { font-size:15px; }
+    .sheet { padding:20px 18px; }
+    #squares { font-size:17px; letter-spacing:2px; }
+    /* Buttons stay above the 44px touch target once padding is counted. */
+    .row button { padding:10px 11px; }
+  }
+  /* Landscape phones are shorter than they are narrow: a 38vh map leaves the
+     panel unusable, so give the map less. */
+  @media (max-height: 520px) and (max-width: 860px) {
+    #stage { height:32vh; min-height:130px; }
+  }
 </style>
 </head>
 <body>
@@ -154,8 +197,8 @@
          &nbsp; <span class="k" style="background:var(--to)"></span><b>Goal</b>
          &nbsp; <span class="k" style="background:var(--trail)"></span><b>Your route</b></div>
     <div style="margin-top:5px">Dots are articles, coloured by community.
-      <b>closer</b>/<b>further</b> compare a link&rsquo;s straight-line distance
-      to the goal on this map &mdash; a hint, not the answer.</div>
+      Links are listed by how many articles point at them &mdash; the number on
+      each row.</div>
   </div>
 
   <div id="nomap">
@@ -202,6 +245,16 @@
     </div>
     <input id="search" placeholder="Search an article to jump there&hellip;">
     <div id="hits"></div>
+
+    <details id="custom">
+      <summary>Pick your own race</summary>
+      <input id="cfrom" placeholder="From&hellip;">
+      <div id="chitsA" class="hits"></div>
+      <input id="cto" placeholder="To&hellip;">
+      <div id="chitsB" class="hits"></div>
+      <button class="primary" id="cgo" disabled>Race</button>
+      <div class="lbl2" id="cerr"></div>
+    </details>
   </header>
 
   <div class="ends">
@@ -376,11 +429,11 @@ async function go(id, isBack) {
   const d = await api(`/api/article/${id}?${q}`);
 
   if (!isBack) {
-    const prev = state.cur;
-    if (prev) {
-      const b = dist(prev,state.goal), a = dist(d,state.goal);
-      state.steps.push(b!=null && a!=null ? a<b : null);
-    }
+    // One entry per click. Deliberately not "did this get closer on the map" —
+    // that was measured at a 1.18x lift over guessing, so the green and red
+    // squares were decorating noise. Until the goal-distance BFS exists, the
+    // only true thing we can say per click is whether it was still inside par.
+    if (state.cur) state.steps.push(state.trail.length <= (state.par ?? 0));
     state.trail.push(d);
   }
   state.cur = d;
@@ -410,26 +463,32 @@ function renderLinks(d) {
       Use <b>&larr; Back</b> to return.</div>`;
     return;
   }
-  const here = dist(d, state.goal);
+  // Sorted by in-degree, NOT by distance to the goal on the map.
+  //
+  // Map distance was measured against ground truth (reverse BFS from the goal,
+  // 760,506 links across six goals) and predicts a real step towards the goal
+  // 27.5% of the time against a 23.3% base rate — a 1.18x lift. Articles with
+  // real force-layout positions score 1.23x, so a better layout does not
+  // rescue it: a 2D embedding of a 7.2M-node graph with effective diameter ~4
+  // simply cannot encode graph distance.
+  //
+  // The ordering mattered as much as the removed badge did. Players read list
+  // order as importance whether or not there is an arrow beside it, so sorting
+  // by that metric was the same lie in a quieter voice. In-degree is at least
+  // a true fact about the graph.
   const links = d.links.slice().sort((a,b) => {
     if (!!a.banned !== !!b.banned) return a.banned ? 1 : -1;
-    const da = dist(a,state.goal), db = dist(b,state.goal);
-    if (da!=null && db!=null) return da-db;
     return b.in_degree-a.in_degree;
   });
   const frag = document.createDocumentFragment();
   for (const l of links) {
-    const dl = dist(l,state.goal);
-    const closer = (here!=null && dl!=null) ? dl<here : null;
     const el = document.createElement('button');
     el.className='link'; el.disabled = !!l.banned;
     if (l.banned) el.title = `Banned at this difficulty: ${l.in_degree.toLocaleString()} inbound links`;
     el.innerHTML =
       `<span class="dot" style="background:${l.banned?'var(--locked)':colorOf(l.community)}"></span>`+
       `<span class="name">${esc(l.title)}</span>`+
-      (l.banned ? `<span class="tag lock">&#128274; hub</span>`
-        : closer===null ? '' :
-          `<span class="tag ${closer?'closer':'further'}">${closer?'&#9660;':'&#9650;'}</span>`)+
+      (l.banned ? `<span class="tag lock">&#128274; hub</span>` : '')+
       `<span class="tag">${l.in_degree.toLocaleString()}</span>`;
     if (!l.banned) el.onclick = () => go(l.id);
     frag.appendChild(el);
@@ -457,7 +516,8 @@ async function finish(won) {
     ? `<b>${clicks}</b> clicks &nbsp;·&nbsp; par <b>${par}</b> &nbsp;·&nbsp; <b>${mmss(state.elapsed)}</b>`
     : `par was <b>${par}</b>`;
 
-  const sq = state.steps.map(s => s===null?'⬜':s?'🟩':'🟥');
+  // Green while inside par, red for every click past it.
+  const sq = state.steps.map(s => s?'🟩':'🟥');
   $('squares').textContent = won ? sq.join('') : '';
   state.share = (state.number?`Wiki Race #${state.number}`:'Wiki Race')+
     ` (${state.difficulty})\n`+
@@ -510,14 +570,15 @@ async function describeHubs() {
   } catch { $('hubwhat').textContent = ''; }
 }
 
-async function startRace(endpoint) {
+async function startRace(endpoint, extra) {
   for (const b of ['new','daily']) $(b).disabled = true;
   $('result').style.display='none';
   try {
     // The daily is a fixed preset so everyone races the same thing; the
     // slider only steers free play.
     const isDaily = endpoint.endsWith('daily');
-    const q = isDaily
+    const q = extra ? `${extra}&ban_top=${HUB_STOPS[+$('hubs').value]}`
+      : isDaily
       ? 'difficulty=medium'
       : `difficulty=hard&ban_top=${HUB_STOPS[+$('hubs').value]}`;
     const diff = isDaily ? 'daily' : 'custom';
@@ -534,13 +595,19 @@ async function startRace(endpoint) {
     startClock();
   } catch(e) {
     $('links').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    // Rethrown so a caller that has somewhere better to put the message — the
+    // custom-race form, which can suggest lowering the hub level — can use it.
+    // Callers with nowhere to show it swallow it explicitly.
+    throw e;
   } finally { for (const b of ['new','daily']) $(b).disabled = false; }
 }
 
 /* ---------------- controls ---------------- */
-$('new').onclick   = () => startRace('/api/puzzle');
-$('again').onclick = () => startRace('/api/puzzle');
-$('daily').onclick = () => startRace('/api/daily');
+// .catch(()=>{}): startRace already rendered the message into the link list,
+// and an unhandled rejection here would only spam the console.
+$('new').onclick   = () => startRace('/api/puzzle').catch(()=>{});
+$('again').onclick = () => startRace('/api/puzzle').catch(()=>{});
+$('daily').onclick = () => startRace('/api/daily').catch(()=>{});
 $('giveup').onclick = () => { if (state.goal && !state.done) finish(false); };
 $('back').onclick = () => {
   if (state.trail.length < 2) return;
@@ -601,6 +668,67 @@ $('share').onclick = async () => {
   setTimeout(()=>{ b.textContent='Copy result'; }, 1600);
 };
 
+/* ---------------- pick your own race ---------------- */
+// Two independent pickers. Each keeps the chosen id on the input element so
+// the id, not the typed text, is what gets sent — titles are not unique enough
+// to resolve server-side, and re-searching on submit could pick a different
+// article than the one shown.
+const picked = { from:null, to:null };
+
+function attachPicker(inputId, hitsId, slot) {
+  let t = null;
+  const input = $(inputId), hits = $(hitsId);
+  input.addEventListener('input', e => {
+    clearTimeout(t);
+    picked[slot] = null;
+    input.classList.remove('picked');
+    $('cgo').disabled = !(picked.from && picked.to);
+    const q = e.target.value.trim();
+    if (!q) { hits.innerHTML=''; return; }
+    t = setTimeout(async () => {
+      let res;
+      try { res = await api('/api/search?limit=6&q='+encodeURIComponent(q)); }
+      catch { return; }
+      hits.innerHTML='';
+      for (const h of res) {
+        const el = document.createElement('div');
+        el.className='hit';
+        el.innerHTML = `${esc(h.title)} <span class="tag">${h.in_degree.toLocaleString()}</span>`;
+        el.onclick = () => {
+          picked[slot] = h.id;
+          input.value = h.title;
+          input.classList.add('picked');
+          hits.innerHTML='';
+          $('cerr').textContent='';
+          $('cgo').disabled = !(picked.from && picked.to);
+        };
+        hits.appendChild(el);
+      }
+    }, 220);
+  });
+}
+attachPicker('cfrom','chitsA','from');
+attachPicker('cto','chitsB','to');
+
+$('cgo').onclick = async () => {
+  if (!picked.from || !picked.to) return;
+  if (picked.from === picked.to) {
+    $('cerr').textContent = 'Pick two different articles.';
+    return;
+  }
+  $('cerr').textContent = 'Finding the shortest route…';
+  state.trail=[]; state.steps=[]; state.cur=null; state.done=false;
+  try {
+    await startRace('/api/puzzle', `from=${picked.from}&to=${picked.to}`);
+    $('cerr').textContent='';
+    $('custom').open = false;
+  } catch (e) {
+    // A pair with no route under the current hub level is the common case, and
+    // the hub slider is the fix — say so rather than just reporting failure.
+    $('cerr').textContent = e.message || 'No route found. Try a lower hub level.';
+  }
+};
+
 let timer=null;
 $('search').addEventListener('input', e => {
   clearTimeout(timer);
@@ -644,7 +772,7 @@ window.addEventListener('keydown', e => {
   } else { $('nomap').style.display='grid'; $('legend').style.display='none'; }
   resize(); requestAnimationFrame(frame);
   describeHubs();
-  startRace('/api/daily');
+  startRace('/api/daily').catch(()=>{});
 })();
 </script>
 </body>
