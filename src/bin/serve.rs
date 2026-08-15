@@ -480,6 +480,34 @@ async fn puzzle(
 ) -> impl IntoResponse {
     let name = q.get("difficulty").cloned().unwrap_or_else(|| "easy".into());
     let d = Difficulty::parse(&name);
+
+    // Player-chosen endpoints. Both must be given; one alone is ambiguous
+    // enough that failing loudly beats guessing which half to generate.
+    let from = q.get("from").and_then(|v| v.parse::<u32>().ok());
+    let to = q.get("to").and_then(|v| v.parse::<u32>().ok());
+    if from.is_some() || to.is_some() {
+        let (Some(a), Some(b)) = (from, to) else {
+            return err("a custom race needs both from and to").into_response();
+        };
+        // Distinguished from the no-route case below: puzzle_between rejects
+        // both, but "no route" is actively misleading for a == b.
+        if a == b {
+            return err("pick two different articles").into_response();
+        }
+        let ban_top = q.get("ban_top").and_then(|v| v.parse::<usize>().ok());
+        let out = tokio::task::spawn_blocking(move || {
+            let limit = ban_top.and_then(|n| s.game.hub_cut(n, 0).0);
+            s.with_finder(|g, pf| g.puzzle_between(pf, a, b, limit))
+                .map(|p| issue(&s, p, "custom".into(), None))
+        })
+        .await;
+        return match out {
+            Ok(Some(p)) => Json(p).into_response(),
+            Ok(None) => err("no route between those articles at this hub level").into_response(),
+            Err(_) => err("puzzle generation failed").into_response(),
+        };
+    }
+
     // An explicit seed makes a puzzle reproducible, which is what a shared
     // daily challenge needs: same seed, same race, for everyone.
     let seed = q
