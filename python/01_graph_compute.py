@@ -299,6 +299,8 @@ def _layout_gpu(u, v, n, cfg):
 
 
 CANVAS = 1000.0
+# Spread for backbone-propagated articles, as a fraction of the canvas.
+JITTER = CANVAS * 0.004
 
 
 def _normalize_centres(centres, connected):
@@ -523,6 +525,18 @@ def _sfdp_place(raw, in_giant, labels, n, backbone=None, u=None, v=None):
                 break
             coords[newly, 0] = sx[newly] / cnt[newly]
             coords[newly, 1] = sy[newly] / cnt[newly]
+
+            # Jitter, because the centroid of identical neighbours is
+            # identical. Measured on simplewiki: 23.7% of articles landed on
+            # top of another and the worst pile-up was 840 French communes at
+            # one coordinate — each links only to its department, so they all
+            # solve to the same point. In a real force layout repulsion would
+            # spread them into a small cloud; this restores the area they
+            # should occupy without pretending to recover their true
+            # positions. Seeded, so runs stay reproducible.
+            rng = np.random.default_rng(1234 + rnd)
+            k = newly.sum()
+            coords[newly] += rng.normal(0.0, JITTER, size=(k, 2))
             placed |= newly
             print(f"   propagation round {rnd + 1}: placed {newly.sum():,}, "
                   f"{int((~placed).sum()):,} left")
