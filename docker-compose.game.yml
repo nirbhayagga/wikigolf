@@ -56,6 +56,28 @@ services:
       - "127.0.0.1:8080:8080"
     networks:
       - proxy
+
+    # ---- No Traefik? -----------------------------------------------------
+    # To publish directly instead — on a LAN, or behind a proxy you configure
+    # yourself — make these four changes:
+    #
+    #   1. ports:      - "8080:8080"        (or "${PORT:-8080}:8080")
+    #   2. command:    drop --trust-proxy AND --secure-cookies
+    #   3. networks:   delete the `networks:` key here and the top-level
+    #                  `networks:` block, so compose uses its default bridge
+    #   4. labels:     harmless to leave; Traefik is not watching
+    #
+    # Both command flags must go, and for different reasons. Keeping
+    # --trust-proxy on a directly-published port lets any client forge
+    # X-Forwarded-For and bypass the per-IP rate limiter entirely. Keeping
+    # --secure-cookies over plain http means the browser never sends the
+    # identity cookie back, so every request looks like a new player and the
+    # leaderboard silently stops attributing runs.
+    #
+    # LAN note: binding 8080 on all interfaces exposes an unauthenticated
+    # service to your whole network. That is fine for testing at home and not
+    # fine on untrusted wifi.
+    # ----------------------------------------------------------------------
     labels:
       - traefik.enable=true
       - traefik.http.routers.wikirace.rule=Host(`${RACE_HOST}`)
