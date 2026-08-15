@@ -16,8 +16,14 @@ gpu:
   store_transposed: true   # optimizes PageRank
 
 layout:
-  backend: "auto"          # "auto" (GPU, fall back to CPU), "gpu", or "cpu"
-  algorithm: "fa2"         # GPU: "fa2". CPU fallback: "drl" or "fr"
+  backend: "cpu"           # "cpu" (SFDP, the working path), "auto", or "gpu".
+                           # NOT "auto": cugraph.force_atlas2 segfaults on
+                           # modern NVIDIA drivers (verified on a 4080 /
+                           # driver 580 — it dies inside cuCtxGetDevice on a
+                           # FIVE vertex graph), and a segfault is not a Python
+                           # exception, so "auto" cannot fall back from it. The
+                           # process simply dies.
+  algorithm: "fa2"         # GPU only, and currently unusable — see backend.
   max_iter: 500            # ForceAtlas2 iterations (GPU only)
   lin_log: false           # true = tighter clusters in FA2
   backbone_frac: 0.10        # 0 = lay out every article (slow); 0.10 = lay out the
