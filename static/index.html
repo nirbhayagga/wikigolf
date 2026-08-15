@@ -865,6 +865,72 @@ $('post').onclick = async () => {
 
 $('share').onclick = () => copyText(state.share, $('share'), 'Copy result');
 
+/* ---------------- pick your own race ---------------- */
+// Two independent pickers. Each keeps the chosen id on the input element so
+// the id, not the typed text, is what gets sent — titles are not unique enough
+// to resolve server-side, and re-searching on submit could pick a different
+// article than the one shown.
+const picked = { from:null, to:null };
+
+function attachPicker(inputId, hitsId, slot) {
+  let t = null;
+  const input = $(inputId), hits = $(hitsId);
+  input.addEventListener('input', e => {
+    clearTimeout(t);
+    picked[slot] = null;
+    input.classList.remove('picked');
+    $('cgo').disabled = !(picked.from && picked.to);
+    const q = e.target.value.trim();
+    if (!q) { hits.innerHTML=''; return; }
+    t = setTimeout(async () => {
+      let res;
+      try { res = await api('/api/search?limit=6&q='+encodeURIComponent(q)); }
+      catch { return; }
+      hits.innerHTML='';
+      for (const h of res) {
+        const el = document.createElement('div');
+        el.className='hit';
+        el.innerHTML = `${esc(h.title)} <span class="tag">${h.in_degree.toLocaleString()}</span>`;
+        el.onclick = () => {
+          picked[slot] = h.id;
+          input.value = h.title;
+          input.classList.add('picked');
+          hits.innerHTML='';
+          $('cerr').textContent='';
+          $('cgo').disabled = !(picked.from && picked.to);
+        };
+        hits.appendChild(el);
+      }
+    }, 220);
+  });
+}
+attachPicker('cfrom','chitsA','from');
+attachPicker('cto','chitsB','to');
+
+$('cgo').onclick = async () => {
+  if (!picked.from || !picked.to) return;
+  if (picked.from === picked.to) {
+    $('cerr').textContent = 'Pick two different articles.';
+    return;
+  }
+  $('cerr').textContent = 'Finding the shortest route…';
+  state.trail=[]; state.steps=[]; state.cur=null; state.done=false;
+  try {
+    await startRace('/api/puzzle', `from=${picked.from}&to=${picked.to}`);
+    $('cerr').textContent='';
+    $('custom').open = false;
+  } catch (e) {
+    // A pair with no route under the current hub level is the common case, and
+    // the hub slider is the fix — say so rather than just reporting failure.
+    $('cerr').textContent = e.message || 'No route found. Try a lower hub level.';
+  }
+};
+
+// Filtering and sorting are local to the links already on screen — no request,
+// no debounce needed. Repainting a few hundred rows is imperceptible.
+$('lfilter').addEventListener('input', paintLinks);
+$('lsort').addEventListener('change', paintLinks);
+
 let timer=null;
 $('search').addEventListener('input', e => {
   clearTimeout(timer);
