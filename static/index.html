@@ -15,6 +15,10 @@
   }
   * { box-sizing:border-box; }
   html,body { height:100%; margin:0; }
+  /* Mobile browsers count the collapsing URL bar in 100%/100vh, so the bottom
+     of the layout sits under it and is unreachable. dvh tracks the visible
+     viewport instead. */
+  @supports (height:100dvh) { html,body { height:100dvh; } }
   body {
     background:var(--bg); color:var(--text); display:flex; overflow:hidden;
     font:14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -158,10 +162,29 @@
      viewport, panel below taking the rest and scrolling internally. */
   @media (max-width: 860px) {
     body { flex-direction:column; }
-    #stage { flex:none; height:38vh; min-height:190px; }
-    aside { width:100%; flex:1 1 auto; min-height:0;
+    #stage { flex:none; height:34vh; min-height:160px; }
+
+    /* The sidebar becomes the scroll container.
+       Keeping the desktop arrangement here — a fixed-height column with only
+       the link list scrolling — does not survive a phone: header, ends and
+       footer together are taller than the remaining viewport, so #linkwrap is
+       squeezed to nothing and body{overflow:hidden} clips the rest with no way
+       to reach it. Let the whole column scroll instead. */
+    aside { width:100%; flex:1 1 auto; min-height:0; overflow-y:auto;
+            -webkit-overflow-scrolling:touch;
             border-left:0; border-top:1px solid var(--line); }
-    /* #result lives inside #stage, so it would be trapped in that 38vh strip. */
+    /* Natural height inside a scrolling parent, with enough room that the
+       list and the Start button are both worth scrolling to. */
+    #linkwrap { flex:none; min-height:320px; }
+    #links { overflow-y:visible; }
+    /* Back / Pause / Give up stay reachable without scrolling to the bottom. */
+    footer { position:sticky; bottom:0; background:var(--panel); z-index:4; }
+    /* Top-aligned, not centred: #linkwrap is as tall as the link list, so
+       centring the Start button inside it can push it off screen on a long
+       page exactly when the player needs to press it. */
+    #veil { place-items:start center; padding-top:34px; }
+
+    /* #result lives inside #stage, so it would be trapped in that strip. */
     #result { position:fixed; }
     /* No room for the legend beside the HUD at this width. */
     #legend { display:none; }
