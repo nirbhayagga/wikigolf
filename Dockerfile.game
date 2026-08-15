@@ -1,0 +1,52 @@
+# wiki-race: the Rust game server.
+#
+# Separate from the Dockerfile at the repo root, which builds the Panel/
+# Datashader viewer. They share nothing: this image has no Python at all.
+#
+# Data is NOT baked in. The parquet is ~1.3 GB and changes on a different
+# cadence than the code, so it is mounted read-only at runtime.
+
+FROM rust:1-bookworm AS build
+WORKDIR /src
+
+# Build dependencies first so a code-only change does not refetch the registry.
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src/bin \
+ && echo 'fn main(){}' > src/bin/serve.rs \
+ && echo '' > src/lib.rs \
+ && cargo build --release --bin serve 2>/dev/null || true \
+ && rm -rf src
+
+COPY src ./src
+# Touch so cargo does not reuse the stub's fingerprint.
+RUN touch src/bin/serve.rs src/lib.rs && cargo build --release --bin serve
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# Unprivileged: the server only ever reads the data mount.
+RUN useradd --system --uid 10001 --create-home wikirace
+WORKDIR /app
+COPY --from=build /src/target/release/serve /usr/local/bin/serve
+COPY static ./static
+
+# The secret backing the signed identity cookie is persisted next to the
+# working directory, so /app must be writable by the service user even though
+# the data mount is not.
+RUN chown wikirace:wikirace /app
+USER wikirace
+
+EXPOSE 8080
+# 0.0.0.0, not the binary's 127.0.0.1 default: inside a container the loopback
+# default would make the port unreachable from the host.
+ENV WIKIRACE_HOST=0.0.0.0 WIKIRACE_PORT=8080
+
+# Loading 231.7M edges into CSR takes a minute or so and the process does not
+# accept connections until it finishes, so the start period has to cover it or
+# the orchestrator will kill the container in a loop before it ever comes up.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8080/api/meta || exit 1
+
+CMD ["sh", "-c", "exec serve --data /data --host ${WIKIRACE_HOST} --port ${WIKIRACE_PORT}"]
