@@ -613,6 +613,10 @@ async fn leaderboard(
     Query(q): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let number = q.get("number").and_then(|v| v.parse::<u64>().ok());
+    // "medium" is a board normal play never writes to — free play sends
+    // "hard", custom races "custom", the daily whatever it was asked for — so
+    // a caller that omits this gets an empty list rather than a wrong one.
+    // The page always sends its own race's values.
     let difficulty = q.get("difficulty").cloned().unwrap_or_else(|| "medium".into());
     let rows: Vec<BoardRow> = s
         .runs
@@ -834,6 +838,8 @@ mod page_tests {
             "$('theme').addEventListener",
             "$('helpbtn').onclick",
             "$('helpclose').onclick",
+            "async function loadBoard",
+            "$('post').onclick",
         ] {
             assert!(page.contains(needle), "static/index.html lost: {needle}");
         }

@@ -204,6 +204,11 @@
   .step .t { font-size:13px; }
   .step.hit .n { background:var(--accent); color:var(--bg); border-color:var(--accent); }
   .note { color:var(--faint); font-size:11px; margin-top:12px; }
+  .brow { display:flex; align-items:center; gap:9px; padding:3px 0; font-size:13px; }
+  .brow .n { width:19px; flex:none; font:600 10px/18px var(--mono); text-align:center;
+             color:var(--faint); }
+  .brow .who { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .brow.me .who { color:var(--accent); font-weight:600; }
 
   /* help */
   #theme { padding:4px 6px; font-size:11px; }
@@ -346,6 +351,10 @@
       </div>
       <div class="score" id="posted" style="margin-top:7px"></div>
       <div class="routebox"><div class="lbl" id="routelbl"></div><div id="route"></div></div>
+      <div class="routebox">
+        <div class="lbl">Leaderboard &mdash; <span id="boardname"></span></div>
+        <div id="board"></div>
+      </div>
       <div class="row" style="margin-top:16px">
         <button class="primary" id="share" style="flex:1">Copy result</button>
         <button id="again" style="flex:1">New race</button>
@@ -803,6 +812,7 @@ async function finish(won) {
   // Only a completed run can be submitted, and only the server decides
   // whether it counts.
   $('post').disabled = !won;
+  loadBoard();
   $('posted').textContent = '';
   $('nick').value = localStorage.getItem('wr-nick') || '';
 
@@ -880,6 +890,31 @@ async function startRace(endpoint, extra) {
     // Callers with nowhere to show it swallow it explicitly.
     throw e;
   } finally { for (const b of ['new','daily']) $(b).disabled = false; }
+}
+
+/* ---------------- leaderboard ----------------
+   Boards are keyed by exactly what was played: free:<difficulty> for free
+   play, daily:<number>:<difficulty> for the daily. The client holds both
+   values already, so it asks for its own board rather than relying on the
+   endpoint's default — which is "medium", a board normal play never writes
+   to, and which therefore always came back empty. */
+async function loadBoard() {
+  const q = new URLSearchParams({ difficulty: state.difficulty || 'hard' });
+  if (state.number != null) q.set('number', state.number);
+  $('boardname').textContent = state.number != null
+    ? `Daily #${state.number}` : `free play, ${state.difficulty || 'hard'}`;
+  try {
+    const rows = await api('/api/leaderboard?' + q);
+    $('board').innerHTML = rows.length
+      ? rows.map(r =>
+          `<div class="brow"><span class="n">${r.rank}</span>` +
+          `<span class="who">${esc(r.nickname || 'anonymous')}</span>` +
+          `<span class="tag">${r.clicks} clicks</span>` +
+          `<span class="tag">${mmss(r.ms)}</span></div>`).join('')
+      : `<div class="empty">No scores posted here yet.</div>`;
+  } catch (e) {
+    $('board').innerHTML = `<div class="empty">${esc(e.message || 'could not load')}</div>`;
+  }
 }
 
 /* ---------------- theme + help ---------------- */
@@ -994,6 +1029,7 @@ $('post').onclick = async () => {
     $('posted').innerHTML = r.rank
       ? `Accepted &mdash; rank <b>#${r.rank}</b> on this board.`
       : 'Accepted.';
+    loadBoard();
   } catch (e) {
     $('posted').textContent = `Rejected: ${e.message}`;
     $('post').disabled = false;
