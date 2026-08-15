@@ -24,7 +24,7 @@ DEFAULTS = {
     "pipeline": {"sample_ratio": 1.0, "data_dir": "data"},
     "gpu": {"store_transposed": True},
     "layout": {
-        "backend": "auto",
+        "backend": "cpu",
         "algorithm": "fa2",
         "max_iter": 500,
         "lin_log": False,
