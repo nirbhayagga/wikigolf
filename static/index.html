@@ -5,13 +5,59 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Wiki Race</title>
 <style>
-  :root {
+  /* Themes.
+     Every colour the page uses — including the ones the canvas paints — comes
+     from these variables, so a theme is a palette and nothing else. The canvas
+     reads them through readTheme(); anything hardcoded in a fillStyle would
+     silently ignore the theme, which is how the map ends up black on a light
+     background. */
+  :root, :root[data-theme="midnight"] {
     --bg:#070910; --bg2:#0d1119; --panel:#11151f; --card:#161b27;
     --line:#232a3a; --line2:#2e374b;
-    --text:#e8ecf4; --dim:#8791a8; --faint:#5c6579;
+    --text:#e8ecf4; --dim:#8791a8; --faint:#7c8494;
     --accent:#5eead4; --accent2:#38bdf8;
     --from:#4ade80; --to:#fb7185; --trail:#fbbf24; --locked:#4a5163;
+    --hover:#1a2130;
+    --stage-a:#0e1420; --stage-b:#070910;
+    --canvas-bg:#070910; --canvas-ink:232,236,244; --canvas-halo:7,9,16;
+    --dot-s:58%; --dot-l:60%; --dot-a:.30;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  :root[data-theme="paper"] {
+    --bg:#f2f0ea; --bg2:#e9e6dd; --panel:#faf9f5; --card:#efece4;
+    --line:#dcd7ca; --line2:#c9c3b2;
+    --text:#211f1a; --dim:#6a6455; --faint:#767060;
+    --accent:#0f7a6b; --accent2:#1f6f9c;
+    --from:#1b7a3e; --to:#b6304a; --trail:#a86a06; --locked:#b3ac9c;
+    --hover:#e6e2d7;
+    --stage-a:#ffffff; --stage-b:#eceadf;
+    --canvas-bg:#f6f4ee; --canvas-ink:33,31,26; --canvas-halo:255,255,255;
+    --dot-s:62%; --dot-l:42%; --dot-a:.42;
+  }
+
+  :root[data-theme="terminal"] {
+    --bg:#03060a; --bg2:#04090d; --panel:#050b0c; --card:#07120f;
+    --line:#123423; --line2:#1c4a31;
+    --text:#b9f7c8; --dim:#5fae7c; --faint:#4d8664;
+    --accent:#39ff88; --accent2:#8affc1;
+    --from:#39ff88; --to:#ff5f6d; --trail:#ffd166; --locked:#2a5a3e;
+    --hover:#0b1f16;
+    --stage-a:#06110c; --stage-b:#03060a;
+    --canvas-bg:#03060a; --canvas-ink:185,247,200; --canvas-halo:3,6,10;
+    --dot-s:70%; --dot-l:55%; --dot-a:.32;
+  }
+
+  :root[data-theme="contrast"] {
+    --bg:#000000; --bg2:#000000; --panel:#0a0a0a; --card:#141414;
+    --line:#3a3a3a; --line2:#585858;
+    --text:#ffffff; --dim:#d0d0d0; --faint:#a8a8a8;
+    --accent:#ffd400; --accent2:#00d5ff;
+    --from:#00e676; --to:#ff4d6d; --trail:#ffd400; --locked:#6a6a6a;
+    --hover:#242424;
+    --stage-a:#0a0a0a; --stage-b:#000000;
+    --canvas-bg:#000000; --canvas-ink:255,255,255; --canvas-halo:0,0,0;
+    --dot-s:85%; --dot-l:65%; --dot-a:.45;
   }
   * { box-sizing:border-box; }
   html,body { height:100%; margin:0; }
@@ -29,7 +75,7 @@
   ::-webkit-scrollbar-track { background:transparent; }
 
   /* ---------- map ---------- */
-  #stage { flex:1; position:relative; min-width:0; background:radial-gradient(ellipse at 50% 45%, #0e1420 0%, #070910 70%); }
+  #stage { flex:1; position:relative; min-width:0; background:radial-gradient(ellipse at 50% 45%, var(--stage-a) 0%, var(--stage-b) 70%); }
   /* touch-action:none, or the browser claims the gesture to scroll the page
      and the pointerdown drag never fires on a touchscreen. */
   canvas { display:block; width:100%; height:100%; cursor:grab; touch-action:none; }
@@ -70,9 +116,9 @@
   }
   input::placeholder { color:var(--faint); }
   button { cursor:pointer; transition:background .12s, border-color .12s; }
-  button:hover:not(:disabled) { background:#1d2432; border-color:#3c465e; }
-  button.primary { background:var(--accent); color:#04201c; border-color:var(--accent); font-weight:650; }
-  button.primary:hover:not(:disabled) { background:#7bf3e0; border-color:#7bf3e0; }
+  button:hover:not(:disabled) { background:var(--hover); border-color:var(--line2); }
+  button.primary { background:var(--accent); color:var(--bg); border-color:var(--accent); font-weight:650; }
+  button.primary:hover:not(:disabled) { filter:brightness(1.12); }
   button.ghost { background:transparent; }
   button:disabled { opacity:.42; cursor:default; }
   #search { width:100%; margin-top:8px; }
@@ -84,7 +130,7 @@
   #custom .picked { border-color:var(--to); }
   #cerr { margin-top:6px; min-height:14px; }
   .hits .hit { padding:6px 9px; cursor:pointer; border-radius:6px; }
-  .hits .hit:hover { background:#1a2130; }
+  .hits .hit:hover { background:var(--hover); }
 
   #hubctl { margin-top:11px; }
   .hubhead { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:3px; }
@@ -126,7 +172,7 @@
   .link { display:flex; align-items:center; gap:10px; width:100%; padding:8px 10px;
           border:0; background:transparent; border-radius:7px; text-align:left;
           color:var(--text); font:inherit; }
-  .link:hover:not(:disabled) { background:#1a2130; }
+  .link:hover:not(:disabled) { background:var(--hover); }
   .link:disabled { opacity:.44; cursor:not-allowed; }
   .dot { width:9px; height:9px; border-radius:50%; flex:none; }
   .link .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -140,7 +186,7 @@
   #trail b { color:var(--text); font-weight:500; }
 
   /* result */
-  #result { position:absolute; inset:0; background:rgba(7,9,16,.93); display:none;
+  #result { position:absolute; inset:0; background:var(--bg); opacity:.985; display:none;
             place-items:center; backdrop-filter:blur(3px); z-index:5; }
   .sheet { background:var(--panel); border:1px solid var(--line2); border-radius:14px;
            padding:26px 28px; width:min(460px,88%); box-shadow:0 24px 70px rgba(0,0,0,.6); }
@@ -156,8 +202,21 @@
              border:1px solid var(--line2); font:600 10px/18px var(--mono);
              text-align:center; color:var(--dim); }
   .step .t { font-size:13px; }
-  .step.hit .n { background:var(--accent); color:#04201c; border-color:var(--accent); }
+  .step.hit .n { background:var(--accent); color:var(--bg); border-color:var(--accent); }
   .note { color:var(--faint); font-size:11px; margin-top:12px; }
+
+  /* help */
+  #theme { padding:4px 6px; font-size:11px; }
+  #helpbtn { padding:3px 9px; font-size:12px; line-height:1.4; }
+  #help { position:absolute; inset:0; background:var(--bg); opacity:.985; display:none;
+          place-items:center; z-index:6; padding:20px; overflow-y:auto; }
+  #help .sheet { max-height:88vh; overflow-y:auto; }
+  ol.howto { margin:14px 0 0; padding-left:20px; color:var(--dim); font-size:13px; }
+  ol.howto li { margin-bottom:8px; }
+  ol.howto b { color:var(--text); font-weight:600; }
+  .hcheck { display:flex; align-items:center; gap:8px; margin-top:16px;
+            color:var(--dim); font-size:12.5px; cursor:pointer; }
+  .hcheck input { width:15px; height:15px; padding:0; accent-color:var(--accent); }
 
   /* ---------- narrow screens ----------
      The desktop layout is a fixed 432px sidebar beside a flexible map. Below
@@ -189,8 +248,9 @@
        page exactly when the player needs to press it. */
     #veil { place-items:start center; padding-top:34px; }
 
-    /* #result lives inside #stage, so it would be trapped in that strip. */
-    #result { position:fixed; }
+    /* #result and #help live inside #stage, so they would be trapped in that
+       strip. */
+    #result, #help { position:fixed; }
     /* No room for the legend beside the HUD at this width. */
     #legend { display:none; }
     #hud { top:8px; left:8px; padding:8px 11px; }
@@ -244,6 +304,37 @@
     Run <code>python python/01_graph_compute.py</code>.</p></div>
   </div>
 
+  <div id="help">
+    <div class="sheet">
+      <div class="verdict">How to play</div>
+      <ol class="howto">
+        <li>You start on one article and have to reach the <b>goal</b> article.</li>
+        <li>You can only travel by <b>clicking links</b> in the list — no search,
+            no back door. It is Wikipedia with the address bar taken away.</li>
+        <li><b>Par</b> is the shortest route that actually exists. Beat it and you
+            cannot; match it and you found an optimal path.</li>
+        <li>The number beside each link is its <b>inbound link count</b> — how
+            many articles point at it. Big numbers are hubs: fast, but everyone
+            goes that way.</li>
+        <li><b>Hub exclusion</b> locks the biggest articles so you cannot route
+            through "United States" every time. Par is recomputed with the same
+            lock, so the target stays fair.</li>
+        <li><b>Back</b> is free and does not cost a click. The clock keeps
+            running, which is the real cost of a wrong turn.</li>
+        <li><b>Pause</b> stops the clock and hides the links, so it is not a way
+            to think for free.</li>
+      </ol>
+      <div class="score" style="margin-top:14px">
+        Pick your own matchup under <b>Pick your own race</b>, then share the
+        address bar — it always holds a link to the exact race you are playing.
+      </div>
+      <label class="hcheck"><input type="checkbox" id="hnever"> Don't show this again</label>
+      <div class="row" style="margin-top:14px">
+        <button class="primary" id="helpclose" style="flex:1">Got it</button>
+      </div>
+    </div>
+  </div>
+
   <div id="result">
     <div class="sheet">
       <div class="verdict" id="verdict"></div>
@@ -269,7 +360,17 @@
 
 <aside>
   <header>
-    <div class="brand"><h1>WIKI RACE</h1><span id="pnum"></span></div>
+    <div class="brand">
+      <h1>WIKI RACE</h1><span id="pnum"></span>
+      <span style="flex:1"></span>
+      <select id="theme" title="Theme" aria-label="Theme">
+        <option value="midnight">Midnight</option>
+        <option value="paper">Paper</option>
+        <option value="terminal">Terminal</option>
+        <option value="contrast">Contrast</option>
+      </select>
+      <button id="helpbtn" title="How to play" aria-label="How to play">?</button>
+    </div>
     <div class="row">
       <button class="primary" id="new" style="flex:1">Random race</button>
       <button id="daily" style="flex:1">&#9733; Daily</button>
@@ -375,7 +476,20 @@ async function api(p, o) {
 
 /* ---------------- map ---------------- */
 const hue = c => ((c * 2654435761) >>> 0) % 360;
-const colorOf = c => c == null ? '#5b6478' : `hsl(${hue(c)},58%,60%)`;
+let TH = {};
+function readTheme() {
+  const cs = getComputedStyle(document.documentElement);
+  const v = n => cs.getPropertyValue(n).trim();
+  TH = {
+    bg: v('--canvas-bg'), ink: v('--canvas-ink'), halo: v('--canvas-halo'),
+    s: v('--dot-s'), l: v('--dot-l'), a: parseFloat(v('--dot-a')) || .3,
+    from: v('--from'), to: v('--to'), trail: v('--trail'),
+    cur: v('--text'), locked: v('--locked'),
+  };
+}
+// Snapshotted rather than read per draw: getComputedStyle inside the point
+// loop would force a style recalculation 45,000 times a frame.
+const colorOf = c => c == null ? TH.locked : `hsl(${hue(c)},${TH.s},${TH.l})`;
 
 const px = x => (x - cam.x) * cam.s + cv.width / 2;
 // Canvas y grows downward and the layout's does not, so flip.
@@ -410,7 +524,7 @@ function frame(t) {
 }
 
 function draw(t) {
-  ctx.fillStyle = '#070910'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.fillStyle = TH.bg; ctx.fillRect(0,0,cv.width,cv.height);
   if (!META) return;
 
   if (MAP) {
@@ -421,7 +535,7 @@ function draw(t) {
     for (let i=0;i<MAP.x.length;i++) {
       const X = px(MAP.x[i]), Y = py(MAP.y[i]);
       if (X<-20||Y<-20||X>cv.width+20||Y>cv.height+20) continue;
-      ctx.fillStyle = colorOf(MAP.c[i]); ctx.globalAlpha = .30;
+      ctx.fillStyle = colorOf(MAP.c[i]); ctx.globalAlpha = TH.a;
       ctx.beginPath(); ctx.arc(X,Y,r,0,7); ctx.fill();
     }
     ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
@@ -433,29 +547,30 @@ function draw(t) {
     for (const l of LAND) {
       const X=px(l.x), Y=py(l.y);
       if (X<0||Y<0||X>cv.width||Y>cv.height) continue;
-      ctx.lineWidth=3.5; ctx.strokeStyle='rgba(7,9,16,.92)';
+      ctx.lineWidth=3.5; ctx.strokeStyle=`rgba(${TH.halo},.92)`;
       ctx.strokeText(l.title, X, Y);
-      ctx.fillStyle='rgba(232,236,244,.72)'; ctx.fillText(l.title, X, Y);
+      ctx.fillStyle=`rgba(${TH.ink},.72)`; ctx.fillText(l.title, X, Y);
     }
   }
 
   const pts = state.trail.filter(a => a.x != null);
   if (pts.length > 1) {
     ctx.save();
-    ctx.shadowColor='rgba(251,191,36,.75)'; ctx.shadowBlur=10;
-    ctx.strokeStyle='rgba(251,191,36,.95)'; ctx.lineWidth=2.2;
+    ctx.shadowColor=TH.trail; ctx.shadowBlur=10;
+    ctx.strokeStyle=TH.trail; ctx.globalAlpha=.95; ctx.lineWidth=2.2;
     ctx.lineJoin='round'; ctx.lineCap='round';
     ctx.beginPath(); ctx.moveTo(px(pts[0].x),py(pts[0].y));
     for (const p of pts.slice(1)) ctx.lineTo(px(p.x),py(p.y));
     ctx.stroke(); ctx.restore();
-    for (const p of pts.slice(1,-1)) mark(p,'#fbbf24',3);
+    ctx.globalAlpha=1;
+    for (const p of pts.slice(1,-1)) mark(p,TH.trail,3);
   }
-  if (pts.length) mark(pts[0],'#4ade80',6,'From');
+  if (pts.length) mark(pts[0],TH.from,6,'From');
   if (state.goal && state.goal.x!=null) {
     const pulse = 8 + Math.sin((t||0)/380)*3;
-    mark(state.goal,'#fb7185',6,'Goal',pulse);
+    mark(state.goal,TH.to,6,'Goal',pulse);
   }
-  if (state.cur && state.cur.x!=null) mark(state.cur,'#ffffff',5);
+  if (state.cur && state.cur.x!=null) mark(state.cur,TH.cur,5);
 }
 
 function mark(p, color, r, label, ring) {
@@ -468,7 +583,7 @@ function mark(p, color, r, label, ring) {
   ctx.restore();
   if (label) {
     ctx.font='700 10px ui-sans-serif, system-ui'; ctx.textAlign='center';
-    ctx.lineWidth=3; ctx.strokeStyle='rgba(7,9,16,.9)';
+    ctx.lineWidth=3; ctx.strokeStyle=`rgba(${TH.halo},.9)`;
     ctx.strokeText(label.toUpperCase(), X, Y-r-8);
     ctx.fillStyle=color; ctx.fillText(label.toUpperCase(), X, Y-r-8);
   }
@@ -767,6 +882,28 @@ async function startRace(endpoint, extra) {
   } finally { for (const b of ['new','daily']) $(b).disabled = false; }
 }
 
+/* ---------------- theme + help ---------------- */
+function setTheme(name) {
+  document.documentElement.setAttribute('data-theme', name);
+  $('theme').value = name;
+  localStorage.setItem('wr-theme', name);
+  // The canvas paints with plain strings, not CSS, so it has to be told.
+  readTheme();
+}
+$('theme').addEventListener('change', e => setTheme(e.target.value));
+
+function showHelp(on) {
+  $('help').style.display = on ? 'grid' : 'none';
+  if (on) $('hnever').checked = localStorage.getItem('wr-help') === 'off';
+}
+$('helpbtn').onclick = () => showHelp(true);
+$('helpclose').onclick = () => {
+  // The preference is recorded on close rather than on tick, so changing your
+  // mind before closing does what it looks like it does.
+  localStorage.setItem('wr-help', $('hnever').checked ? 'off' : 'on');
+  showHelp(false);
+};
+
 /* ---------------- shareable races ----------------
    The address bar is the share link: every race rewrites it, so copying the
    URL is always enough to hand someone the same race.
@@ -942,7 +1079,7 @@ $('search').addEventListener('input', e => {
     for (const h of hits) {
       const el=document.createElement('div'); el.className='hit';
       el.style.cssText='padding:6px 9px;cursor:pointer;border-radius:6px';
-      el.onmouseenter=()=>el.style.background='#1a2130';
+      el.onmouseenter=()=>el.style.background='var(--hover)';
       el.onmouseleave=()=>el.style.background='';
       el.innerHTML=`${esc(h.title)} <span class="tag">${h.in_degree.toLocaleString()}</span>`;
       el.onclick=()=>{
@@ -966,6 +1103,7 @@ window.addEventListener('keydown', e => {
 });
 
 (async function init(){
+  setTheme(localStorage.getItem('wr-theme') || 'midnight');
   META = await api('/api/meta');
   $('mapmeta').textContent =
     `${META.articles.toLocaleString()} articles · ${META.edges.toLocaleString()} links`;
@@ -974,6 +1112,11 @@ window.addEventListener('keydown', e => {
   } else { $('nomap').style.display='grid'; $('legend').style.display='none'; }
   resize(); requestAnimationFrame(frame);
   describeHubs();
+  // First visit only, unless it was turned off. Shown after the race is armed
+  // so the goal is already on screen behind it, and the clock is not running
+  // either way — a race is armed, not started.
+  if (localStorage.getItem('wr-help') !== 'off') showHelp(true);
+
   const qp = new URLSearchParams(location.search);
   const [uf, ut] = [qp.get('from'), qp.get('to')];
   if (uf && ut) {

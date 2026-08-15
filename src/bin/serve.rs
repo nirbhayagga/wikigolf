@@ -829,6 +829,11 @@ mod page_tests {
             "$('copylink').onclick",
             "$('new').onclick",
             "$('daily').onclick",
+            "function setTheme",
+            "function readTheme",
+            "$('theme').addEventListener",
+            "$('helpbtn').onclick",
+            "$('helpclose').onclick",
         ] {
             assert!(page.contains(needle), "static/index.html lost: {needle}");
         }
