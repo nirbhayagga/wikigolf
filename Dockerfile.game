@@ -45,11 +45,12 @@ WORKDIR /app
 # worth knowing: editing static/index.html requires a rebuild, not a restart.
 COPY --from=build /src/target/release/serve /usr/local/bin/serve
 
-# The secret backing the signed identity cookie is persisted next to the
-# working directory, so /app must be writable by the service user even though
-# the data mount is not.
-RUN chown wikirace:wikirace /app
+# Writable state (leaderboard + cookie secret) lives in --state, which the
+# compose mounts as a volume at /state. Create it owned by the service user so
+# the container still starts if it is run without that mount.
+RUN mkdir -p /state && chown wikirace:wikirace /app /state
 USER wikirace
+VOLUME ["/state"]
 
 EXPOSE 8080
 # 0.0.0.0, not the binary's 127.0.0.1 default: inside a container the loopback

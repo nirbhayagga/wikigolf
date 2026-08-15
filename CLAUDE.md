@@ -160,7 +160,7 @@ Two independent images that share no code:
 - **`--trust-proxy` is required behind a proxy and unsafe without one.** Without it every request appears to come from the proxy's IP and the per-IP rate limiter throttles all users as one bucket; with it on a directly-exposed port, a client can forge `X-Forwarded-For` and defeat rate limiting entirely.
 - **`--secure-cookies` only over HTTPS.** A Secure cookie is never sent over plain http, so setting it in local development silently breaks identity.
 - **The healthcheck needs a long `start-period`.** The process accepts no connections until the CSR is built, so a default start period makes the orchestrator kill it in a loop before it ever comes up.
-- **`/app` must be writable and persistent.** It holds the HMAC secret backing the signed identity cookie and the append-only leaderboard; losing it invalidates every player cookie.
+- **`--state` must point somewhere writable and persistent, and must not be the data dir.** `Registry::open` and `Identity::load_or_create` write `leaderboard.jsonl` and `.wiki-race-secret`, and they default to `--data` — which a deployment mounts read-only, so the process dies at startup with `Read-only file system (os error 30)` and restarts forever. Traefik registers no router for a container in that state, so the symptom presents as "the hostname does not resolve" rather than as a write error. Losing the state volume invalidates every player cookie and the leaderboard with it.
 
 Data is mounted, never baked in: it is ~1.3 GB and changes on a completely different cadence than the code.
 
