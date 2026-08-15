@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A pipeline that turns the English Wikipedia XML dump into an interactive force-directed graph: a Rust two-pass parser resolves `[[wikilinks]]` into an integer article link graph, then Python computes PageRank/layout/communities (GPU via RAPIDS, CPU fallback via igraph) and serves a Datashader/Panel viewer.
+A pipeline that turns the English Wikipedia XML dump into an interactive force-directed graph: a Rust two-pass parser resolves `[[wikilinks]]` into an integer article link graph, then Python computes PageRank (scipy or cuGraph), layout (graph-tool SFDP, CPU) and communities (Leiden), and serves a Datashader/Panel viewer. A second Rust binary (`serve`) runs the wiki-race game off the same Parquet.
 
 This is a **content project** — a public explorable map, quotable statistics, and a poster-grade render — so numbers stated publicly have to survive being checked. That is why the parser is strict about what counts as an article.
 
@@ -68,11 +68,15 @@ There is **no `edges.csv` and no string→integer mapping phase** — that work 
 
 Verified end-to-end on Simple English Wikipedia: parser ~110 s, pipeline 60 s, 283,997 nodes / 3,940,103 edges.
 
-**Full English Wikipedia (20260801) is parsed:** 7,219,290 articles / 231,681,569 edges, 46.4 min, 3.10 GB peak RSS. The old pipeline's 28M vertices / 482M edges are gone. Outputs total ~1.05 GB, so copy the Parquet to the GPU machine, never the 26.67 GB dump. Phase 2 at this scale has still never been run — that is the remaining unknown.
+**Full English Wikipedia (20260801) is parsed:** 7,219,290 articles / 231,681,569 edges, 46.4 min, 3.10 GB peak RSS. The old pipeline's 28M vertices / 482M edges are gone. Outputs total ~1.05 GB, so copy the Parquet between machines, never the 26.67 GB dump.
+
+**Phase 2 has run at full scale.** Symmetrization gives 419,049,910 edges in 26 s. A 10% backbone is 721,929 nodes / 83,399,460 induced edges (19.9% of all). What is still unproven is a *full* (`backbone_frac: 0`) layout, and whether either produces a map with real structure — see the density note below.
+
+**A new dump means a full re-run.** Article ids are dense `0..N-1` assigned in parse order, so a single added or removed article shifts every id after it: parse, PageRank, and layout all have to be redone, and anything that stored an id (leaderboard rows, saved puzzles) is silently wrong afterwards. Making refreshes incremental means persisting a title→id map and only appending ids for new articles, which would also let the layout warm-start from the previous positions. That work has not been done.
 
 **Use the `-multistream` dump.** It is concatenated bz2 streams, so `pbzip2`/`lbzip2` can decompress it across cores: 58.9 MB/s measured vs 24.3 MB/s for a single stream. Decompression is the parser's bottleneck, so this is a 2.4x wall-clock difference. (simplewiki is single-stream and cannot benefit, which is why it takes ~110 s despite being 75x smaller.)
 
-**Parse where the dump is, then copy the Parquet.** The parser is CPU/IO-bound and laptop-sized; only Phase 2 wants a GPU. Outputs are ~1-2 GB against a 27 GB dump.
+**Parse where the dump is, then copy the Parquet.** The parser is CPU/IO-bound and laptop-sized. Outputs are ~1-2 GB against a 27 GB dump. Nothing in the pipeline needs a GPU any more; Phase 2 wants cores and RAM, and SFDP is OpenMP-parallel.
 
 ## Architecture
 
@@ -89,15 +93,24 @@ Phase flow inside `01_graph_compute.py`:
 
 **Directed vs undirected is deliberate:** PageRank/in-degree use the directed graph (link direction = importance); ForceAtlas2 and Leiden use the symmetrized graph.
 
-### CPU layout is coarsened, and is an approximation
+### Layout is CPU SFDP. The GPU path is dead.
 
-Direct DRL/FR on the full graph is **not viable**: on simplewiki's 7.3M symmetric edges it had not finished after 10 minutes, and enwiki is far larger. `_layout_cpu` instead runs Leiden first (~6 s), lays out the ~1.4k-node community meta-graph, and places articles on a golden-angle spiral around their community centre with hubs at the middle. Set `layout.cpu_method: "drl"` to force a direct layout on graphs small enough to afford it.
+**`cugraph.force_atlas2` segfaults and is not usable.** It is a legacy algorithm on cuGraph's old C++ API and dies inside `cuCtxGetDevice` against modern NVIDIA drivers — verified on an RTX 4080 / driver 580 on a *five vertex* graph, so it is not a scale or VRAM problem. Four hypotheses were eliminated (cuda-python version, RMM managed memory, our CSR/monkey-patch workarounds, numba context initialization). This reframed the project's old "Phase 2 has never completed at full scale" blocker: the 4x graph inflation was real *and* the layout was failing for an unrelated reason no amount of VRAM would have fixed.
 
-The GPU ForceAtlas2 path is the one that produces the real layout; the CPU path exists so the pipeline runs end-to-end without a GPU.
+A segfault is not a Python exception, so **`layout.backend: "auto"` cannot fall back from it** — the process simply dies. That is why the default is `"cpu"`.
 
-Two things that will bite:
+`_layout_sfdp` (graph-tool SFDP, Hu's multilevel force-directed algorithm) is now the real layout: actively maintained C++, OpenMP-parallel, no GPU, no driver dependency. `layout.cpu_method` also accepts `"drl"`/`"fr"` (direct igraph layout, small graphs only) and `"coarsened"` (lays out the community meta-graph and spirals articles around their centre — seconds, but a much cruder map).
+
+**Backbone mode** (`layout.backbone_frac`, default 0.10) lays out only the highest-PageRank articles and places the rest at the centroid of their placed neighbours, with seeded Gaussian jitter so identical neighbours form a small cloud instead of a pile. Measured on simplewiki: 105 s vs 2,304 s. No article or edge is dropped and PageRank/communities still use the full graph; what is lost is a tail article's ability to find its own position.
+
+Things that will bite:
 - **igraph accepts numpy `(E, 2)` arrays directly.** Calling `.tolist()` first materializes millions of Python lists and will OOM.
-- **`run_with_timer` cannot tick during igraph/cuGraph calls** — those hold the GIL, so the clock thread is starved and the display freezes at `00:00:00`. It is not a hang.
+- **`run_with_timer` cannot tick during igraph/graph-tool calls** — those hold the GIL, so the clock thread is starved and the display freezes at `00:00:00`. It is not a hang.
+- **No `groups=` on `sfdp_layout`.** graph-tool pairs group attraction with group *repulsion*, which shatters one connected component into isolated islands. Communities are for colour, not geometry — so the layout does not depend on `community.resolution`, and `cache_sfdp_raw.npz` is deliberately fingerprinted without it.
+- **Lay out the giant component only.** A force layout applies no attraction between disconnected components and flings them arbitrarily far: on simplewiki 99% of articles landed within 55 units while stragglers reached 1,400, leaving the map on 3.9% of the frame.
+- **`GraphView.get_2d_array` returns only the vertices the view keeps**, not an array of size `n`. Map it back with an explicit index, not a boolean mask.
+
+**Density is the open problem at enwiki scale.** The 10% backbone (721,929 nodes / 83.4M induced edges, average degree ~231) laid out to a density statistically indistinguishable from uniform random points — max/mean 2.2x against 2.1x for a random disc. simplewiki's backbone under identical settings scores 6.4x. SFDP's `C` and `p` were swept and do not help (`p=3` → 4.8x, `p=4` → 4.0x, i.e. worse; `C=0.05` → unchanged). Treat a max/mean near 2 in the exporter's density line as "the graph was too dense to unfold", not as a rendering problem.
 
 ### Rust parser (`src/`) — where graph identity is decided
 
@@ -114,18 +127,20 @@ Load-bearing details:
 - **`dump.rs` must handle `Event::GeneralRef`.** quick-xml ≥0.32 emits entity references as separate events; ignoring them deletes every `&` from titles (`AT&T` → `ATT`).
 - **Parse errors and decompressor exit codes are fatal.** A truncated `.bz2` otherwise looks exactly like a clean end-of-dump and yields a silently partial graph.
 
-### Phase 2's GPU workarounds (fragile — read before touching)
+### Phase 2's GPU workarounds (dead code — kept only as a record)
 
-`_phase2_gpu` exists to fit 28M vertices / 482M edges into 16GB VRAM. Each step is load-bearing:
+**None of this runs.** `_phase2_gpu` is unreachable in practice because `force_atlas2` segfaults (see above), and `layout.backend` defaults to `"cpu"`. It is documented because the workarounds were expensive to find and would be needed again if cuGraph ever ships a working force layout on its current API.
+
+`_phase2_gpu` existed to fit 28M vertices / 482M edges into 16GB VRAM. Each step was load-bearing:
 1. Edges are **pre-symmetrized on CPU** (both directions + dedup + self-loop removal) because cuGraph's internal symmetrization blows past VRAM.
 2. The CSR is built **on CPU with scipy**, then handed over via `from_cudf_adjlist` — `from_cudf_edgelist` needs huge temporary sort buffers.
 3. RMM is reinitialized with `managed_memory=True` so overflow pages to system RAM over PCIe.
 4. The graph is constructed as `directed=True`, then `G.graph_properties.directed` is flipped to `False` so FA2/Leiden skip their own `to_undirected()`. Note the assert: `is_directed()` reads `graph_properties.directed`, not `properties.directed`.
 5. `G.nodes()` is **monkey-patched** on the instance to return a precomputed range — cuGraph otherwise reconstructs and concats the edge list (~8GB, `std::bad_alloc`).
 
-All GPU→CPU transfers go through `.to_arrow().to_pandas()` to bypass Numba driver bugs on GeForce cards. Per `codebase_reference.md`, Phase 2 had not yet completed a full-scale run on a 16GB RTX 4080 — this is the project's central blocker.
+All GPU→CPU transfers go through `.to_arrow().to_pandas()` to bypass Numba driver bugs on GeForce cards.
 
-`_phase2_cpu` (igraph DRL + Leiden) is the fallback; `layout.backend: "auto"` swallows GPU errors and falls through to it, while `"gpu"` re-raises so failures stay visible.
+`layout.backend: "auto"` swallows GPU *exceptions* and falls through to the CPU path, `"gpu"` re-raises so failures stay visible — but neither helps against a segfault, which kills the interpreter outright. Do not set either without a specific reason.
 
 ### Config
 
@@ -135,7 +150,19 @@ CLI flags override config: `--sample` beats `pipeline.sample_ratio`, `--width/--
 
 ### Deployment
 
-The Docker image installs **only visualization dependencies** and copies just `04_app.py`, `05_export_png.py`, and `config.yaml`; `data/` is mounted read-only at runtime with results pre-baked. Keep those two scripts free of RAPIDS/igraph/scipy imports or the image breaks.
+Two independent images that share no code:
+
+**Viewer** (`Dockerfile` + `docker-compose.yml`) installs **only visualization dependencies** and copies just `04_app.py`, `05_export_png.py`, and `config.yaml`; `data/` is mounted read-only at runtime with results pre-baked. Keep those two scripts free of RAPIDS/igraph/scipy imports or the image breaks.
+
+**Game** (`Dockerfile.game` + `docker-compose.game.yml`) is the Rust `serve` binary on debian-slim, with no Python at all, behind Traefik with Let's Encrypt. Measured at full enwiki scale: **3.79 GB RSS**, ~1 min to load 231.7M edges into CSR, then 22 ms for a bidirectional BFS and 17 ms for `/api/meta`. Load-bearing:
+
+- **`--host 0.0.0.0`.** The binary defaults to `127.0.0.1`, which inside a container is unreachable from the host.
+- **`--trust-proxy` is required behind a proxy and unsafe without one.** Without it every request appears to come from the proxy's IP and the per-IP rate limiter throttles all users as one bucket; with it on a directly-exposed port, a client can forge `X-Forwarded-For` and defeat rate limiting entirely.
+- **`--secure-cookies` only over HTTPS.** A Secure cookie is never sent over plain http, so setting it in local development silently breaks identity.
+- **The healthcheck needs a long `start-period`.** The process accepts no connections until the CSR is built, so a default start period makes the orchestrator kill it in a loop before it ever comes up.
+- **`/app` must be writable and persistent.** It holds the HMAC secret backing the signed identity cookie and the append-only leaderboard; losing it invalidates every player cookie.
+
+Data is mounted, never baked in: it is ~1.3 GB and changes on a completely different cadence than the code.
 
 ## Repo conventions
 
