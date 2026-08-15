@@ -108,8 +108,13 @@
   .rail { border-left:2px dotted var(--line2); height:12px; margin-left:5px; }
 
   /* links */
-  #linkwrap { position:relative; flex:1; min-height:0; display:flex; }
-  #links { overflow-y:auto; flex:1; padding:7px 9px; }
+  #linkwrap { position:relative; flex:1; min-height:0; display:flex; flex-direction:column; }
+  #linkbar { flex:none; display:none; align-items:center; gap:7px;
+             padding:8px 12px; border-bottom:1px solid var(--line); }
+  #lfilter { flex:1; min-width:0; padding:6px 9px; font-size:13px; }
+  #lsort { padding:6px 8px; font-size:12px; }
+  #lcount { flex:none; font-family:var(--mono); letter-spacing:.2px; white-space:nowrap; }
+  #links { overflow-y:auto; flex:1; min-height:0; padding:7px 9px; }
   /* Opaque, not translucent: the veil exists to make the options unreadable,
      so anything you could squint through would defeat it. */
   #veil { position:absolute; inset:0; display:none; place-items:center; z-index:3;
@@ -310,6 +315,16 @@
   </div>
 
   <div id="linkwrap">
+    <div id="linkbar">
+      <input id="lfilter" placeholder="Filter these links&hellip;">
+      <select id="lsort" title="Sort links">
+        <option value="deg">Most linked</option>
+        <option value="asc">Least linked</option>
+        <option value="az">A &rarr; Z</option>
+        <option value="za">Z &rarr; A</option>
+      </select>
+      <span class="lbl2" id="lcount"></span>
+    </div>
     <div id="links"><div class="empty">Start a race to see links.</div></div>
     <div id="veil">
       <div>
@@ -481,9 +496,12 @@ function setVeil(mode) {          // 'ready' | 'paused' | null
   $('pause').disabled = !state.goal || state.done || mode === 'ready';
   $('back').disabled = !!mode || state.trail.length < 2;
   $('giveup').disabled = !!mode || !state.goal || state.done;
-  for (const id of ['search','cfrom','cto']) {
-    const el = $(id); if (el) el.disabled = !!mode;
-  }
+  // Search and the custom-race pickers stay live under the veil. They were
+  // disabled here at first, which meant they were dead on page load — the
+  // daily arms itself immediately, so 'ready' greyed them out before the
+  // player had touched anything. They are also not a way around a pause:
+  // search returns titles and in-degrees, never an article's links, and the
+  // custom form abandons the current race rather than advancing it.
   if (mode === 'ready') {
     $('veiltitle').textContent = 'Ready when you are';
     $('veilsub').innerHTML = `Get to <b>${esc(state.goal ? state.goal.title : '')}</b>` +
@@ -561,13 +579,50 @@ async function go(id, isBack) {
   fitTo(focus);
 }
 
+// Links of the current article, kept so filtering and re-sorting are local
+// operations — a busy article has hundreds of links, and none of this needs
+// the server.
+let CURLINKS = [];
+
 function renderLinks(d) {
+  CURLINKS = d.links;
+  $('lfilter').value = '';
+  paintLinks();
+}
+
+function paintLinks() {
   const box = $('links');
-  if (!d.links.length) {
+  if (!CURLINKS.length) {
+    $('linkbar').style.display = 'none';
     box.innerHTML = `<div class="empty">Dead end &mdash; nothing links out of here.<br>
       Use <b>&larr; Back</b> to return.</div>`;
     return;
   }
+  $('linkbar').style.display = 'flex';
+
+  const q = $('lfilter').value.trim().toLowerCase();
+  const mode = $('lsort').value;
+  const links = CURLINKS.filter(l => !q || l.title.toLowerCase().includes(q));
+
+  // Banned links sink regardless of sort: they cannot be taken, so they are
+  // never what you are looking for.
+  links.sort((a,b) => {
+    if (!!a.banned !== !!b.banned) return a.banned ? 1 : -1;
+    if (mode === 'az')  return a.title.localeCompare(b.title);
+    if (mode === 'za')  return b.title.localeCompare(a.title);
+    if (mode === 'asc') return a.in_degree-b.in_degree;
+    return b.in_degree-a.in_degree;
+  });
+
+  $('lcount').textContent = q
+    ? `${links.length} of ${CURLINKS.length}`
+    : `${CURLINKS.length} link${CURLINKS.length===1?'':'s'}`;
+
+  if (!links.length) {
+    box.innerHTML = `<div class="empty">No link here matches &ldquo;${esc(q)}&rdquo;.</div>`;
+    return;
+  }
+
   // Sorted by in-degree, NOT by distance to the goal on the map.
   //
   // Map distance was measured against ground truth (reverse BFS from the goal,
@@ -581,10 +636,6 @@ function renderLinks(d) {
   // order as importance whether or not there is an arrow beside it, so sorting
   // by that metric was the same lie in a quieter voice. In-degree is at least
   // a true fact about the graph.
-  const links = d.links.slice().sort((a,b) => {
-    if (!!a.banned !== !!b.banned) return a.banned ? 1 : -1;
-    return b.in_degree-a.in_degree;
-  });
   const frag = document.createDocumentFragment();
   for (const l of links) {
     const el = document.createElement('button');
@@ -837,6 +888,11 @@ $('cgo').onclick = async () => {
     $('cerr').textContent = e.message || 'No route found. Try a lower hub level.';
   }
 };
+
+// Filtering and sorting are local to the links already on screen — no request,
+// no debounce needed. Repainting a few hundred rows is imperceptible.
+$('lfilter').addEventListener('input', paintLinks);
+$('lsort').addEventListener('change', paintLinks);
 
 let timer=null;
 $('search').addEventListener('input', e => {
