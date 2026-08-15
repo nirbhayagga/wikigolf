@@ -27,4 +27,8 @@ cufile.log
 # ones are part of the project.
 *.md
 !README.md
+
+# Generated report, same convention as the *.md audits above. Scoped to the
+# root so static/index.html — which the game actually serves — stays tracked.
+/RUNBOOK.html
 !CLAUDE.md
