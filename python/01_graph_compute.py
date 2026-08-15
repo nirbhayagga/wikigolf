@@ -728,7 +728,9 @@ def main():
     ap = argparse.ArgumentParser(description="Wikipedia Graph Compute Pipeline")
     ap.add_argument("--sample", type=float, default=None,
                     help="edge sample ratio, e.g. 0.01 (smoke tests only)")
-    ap.add_argument("--reset", action="store_true", help="delete caches first")
+    ap.add_argument("--reset", action="store_true", help="delete ALL caches first")
+    ap.add_argument("--reset-layout", action="store_true",
+                    help="delete only phase 2/3 caches, keeping PageRank")
     ap.add_argument("--data-dir", default=None, help="override pipeline.data_dir")
     ap.add_argument(
         "--phases", default="1,2,3",
@@ -751,6 +753,8 @@ def main():
 
     if args.reset:
         reset_caches(paths)
+    elif args.reset_layout:
+        reset_caches(paths, layout_only=True)
 
     paths.require_parser_outputs()
     sample = args.sample if args.sample is not None else cfg["pipeline"]["sample_ratio"]
