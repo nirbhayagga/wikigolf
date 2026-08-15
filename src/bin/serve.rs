@@ -7,7 +7,7 @@
 //! Wikipedia at request time, so the game is self-consistent: the optimal path
 //! we report is optimal *in the world the player is playing in*.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::extract::{ConnectInfo, Path as AxPath, Query, Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
@@ -34,6 +34,14 @@ struct Args {
     /// Directory holding titles.parquet / edges.parquet (and optionally nodes.parquet)
     #[arg(short, long, default_value = "data")]
     data: PathBuf,
+
+    /// Where to keep writable state: the leaderboard log and the HMAC secret
+    /// backing the identity cookie. Defaults to --data, which is right for
+    /// local use but wrong for a deployment: the parquet is large, immutable,
+    /// and normally mounted read-only, and the process refuses to start if it
+    /// cannot open the leaderboard there.
+    #[arg(long)]
+    state: Option<PathBuf>,
 
     #[arg(short, long, default_value_t = 8080)]
     port: u16,
@@ -667,14 +675,21 @@ async fn main() -> Result<()> {
         t.elapsed().as_secs_f64()
     );
 
+    let state_dir = args.state.clone().unwrap_or_else(|| args.data.clone());
+    if state_dir != args.data {
+        std::fs::create_dir_all(&state_dir)
+            .with_context(|| format!("creating state directory {}", state_dir.display()))?;
+    }
+    eprintln!("state (leaderboard, cookie secret) in {}", state_dir.display());
+
     let state = Arc::new(App {
         game,
         finders: Mutex::new(Vec::new()),
-        runs: Registry::open(&args.data)?,
+        runs: Registry::open(&state_dir)?,
         rl_read: RateLimiter::new(READ_BURST, READ_PER_SEC),
         rl_heavy: RateLimiter::new(HEAVY_BURST, HEAVY_PER_SEC),
         trust_proxy: args.trust_proxy,
-        identity: Identity::load_or_create(&args.data)?,
+        identity: Identity::load_or_create(&state_dir)?,
         secure_cookies: args.secure_cookies,
     });
 

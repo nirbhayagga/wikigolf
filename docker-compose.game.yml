@@ -52,7 +52,7 @@ services:
     command:
       - sh
       - -c
-      - exec serve --data /data --host 0.0.0.0 --port 8080 --trust-proxy --secure-cookies
+      - exec serve --data /data --state /state --host 0.0.0.0 --port 8080 --trust-proxy --secure-cookies
     volumes:
       # THE DATA IS NOT IN GIT. `data/` is gitignored (and .dockerignore'd —
       # data/dumps alone is 26 GB and must never enter a build context), so a
@@ -67,10 +67,14 @@ services:
       # titles + edges are required. redirects (alias search) and nodes (the
       # map) are optional — the service degrades gracefully without them.
       - ${DATA_DIR:-./data}:/data:ro
-      # The HMAC secret backing the signed identity cookie and the append-only
-      # leaderboard live here. Losing this volume invalidates every existing
+      # Writable state, kept OUT of /data so the parquet can stay read-only.
+      # Holds leaderboard.jsonl and .wiki-race-secret, the HMAC key behind the
+      # signed identity cookie — losing this volume invalidates every existing
       # player cookie and takes the leaderboard with it.
-      - state:/app
+      #
+      # The server writes these into --data unless --state says otherwise, so
+      # the two flags have to stay in step with these two mounts.
+      - state:/state
     ports:
       # Loopback only: reachable for `curl localhost:8080/api/meta` on the host,
       # not from the internet. Public traffic arrives via Traefik with TLS. Do
