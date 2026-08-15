@@ -1074,8 +1074,21 @@ $('search').addEventListener('input', e => {
   const q = e.target.value.trim();
   if (!q) { $('hits').innerHTML=''; return; }
   timer = setTimeout(async () => {            // debounced: server-side full scan
-    const hits = await api('/api/search?limit=8&q='+encodeURIComponent(q));
+    let hits;
+    try {
+      hits = await api('/api/search?limit=8&q='+encodeURIComponent(q));
+    } catch (err) {
+      // Was silent. /api/search is in the heavy rate-limit bucket, so typing
+      // in more than one box at once can get a 429, and an unhandled rejection
+      // here just left the list empty with no explanation.
+      $('hits').innerHTML = `<div class="empty">${esc(err.message || 'search failed')}</div>`;
+      return;
+    }
     $('hits').innerHTML='';
+    if (!hits.length) {
+      $('hits').innerHTML = `<div class="empty">No article matches that.</div>`;
+      return;
+    }
     for (const h of hits) {
       const el=document.createElement('div'); el.className='hit';
       el.style.cssText='padding:6px 9px;cursor:pointer;border-radius:6px';
@@ -1089,7 +1102,7 @@ $('search').addEventListener('input', e => {
         // the share squares would describe hops no longer on the board.
         state.trail=[]; state.steps=[]; state.cur=null; state.done=false;
         $('result').style.display='none';
-        go(h.id).then(() => { setVeil(null); runClock(); });
+        go(h.id).then(() => { setVeil(null); startClock(); });
       };
       $('hits').appendChild(el);
     }
