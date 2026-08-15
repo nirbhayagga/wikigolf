@@ -732,6 +732,10 @@ def main():
     ap.add_argument("--reset-layout", action="store_true",
                     help="delete only phase 2/3 caches, keeping PageRank")
     ap.add_argument("--data-dir", default=None, help="override pipeline.data_dir")
+    ap.add_argument("--backbone-frac", type=float, default=None,
+                    help="override layout.backbone_frac; 0 lays out every "
+                         "article (hours at full scale) instead of the "
+                         "high-PageRank core")
     ap.add_argument(
         "--phases", default="1,2,3",
         help="which phases to run, e.g. '1' or '2,3'. Phase 1 (PageRank) is "
@@ -748,6 +752,11 @@ def main():
         raise SystemExit(f"--phases may only contain 1, 2 or 3; got {sorted(phases)}")
 
     cfg = load_config()
+    # Applied before check_manifest so it lands in the fingerprint: a full
+    # layout and a backbone layout are different results and must not share a
+    # cache. See CACHE_KEYS in common.py.
+    if args.backbone_frac is not None:
+        cfg["layout"]["backbone_frac"] = args.backbone_frac
     paths = Paths(args.data_dir or cfg["pipeline"]["data_dir"])
     os.makedirs(paths.data_dir, exist_ok=True)
 
