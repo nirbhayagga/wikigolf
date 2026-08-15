@@ -259,6 +259,9 @@
         <button class="primary" id="share" style="flex:1">Copy result</button>
         <button id="again" style="flex:1">New race</button>
       </div>
+      <div class="row" style="margin-top:7px">
+        <button id="copylink" style="flex:1">Copy race link</button>
+      </div>
       <div class="note" id="note"></div>
     </div>
   </div>
@@ -360,7 +363,7 @@ let cam={x:0,y:0,s:1}, target={x:0,y:0,s:1}, dragging=null;
 const blank = () => ({
   goal:null, cur:null, trail:[], steps:[], par:null, ban:null, run:null,
   done:false, started:null, elapsed:0, number:null, difficulty:'easy', share:'',
-  veil:null, pauseAt:0,
+  veil:null, pauseAt:0, url:'',
 });
 let state = blank();
 
@@ -679,7 +682,8 @@ async function finish(won) {
   $('squares').textContent = won ? sq.join('') : '';
   state.share = (state.number?`Wiki Race #${state.number}`:'Wiki Race')+
     ` (${state.difficulty})\n`+
-    (won ? `${clicks} clicks · par ${par} · ${mmss(state.elapsed)}\n${sq.join('')}` : `gave up · par ${par}`);
+    (won ? `${clicks} clicks · par ${par} · ${mmss(state.elapsed)}\n${sq.join('')}` : `gave up · par ${par}`)+
+    (state.url ? `\n${state.url}` : '');
 
   // Only a completed run can be submitted, and only the server decides
   // whether it counts.
@@ -749,6 +753,7 @@ async function startRace(endpoint, extra) {
     $('par').textContent = p.optimal;
     $('time').textContent = '0:00';
     $('pnum').textContent = p.number ? `#${p.number}` : '';
+    setRaceUrl(p);
     await go(p.start.id);
     // Armed, not started. setVeil('ready') holds the clock at 0:00 until the
     // player says go — the daily used to begin timing during page load.
@@ -761,6 +766,50 @@ async function startRace(endpoint, extra) {
     throw e;
   } finally { for (const b of ['new','daily']) $(b).disabled = false; }
 }
+
+/* ---------------- shareable races ----------------
+   The address bar is the share link: every race rewrites it, so copying the
+   URL is always enough to hand someone the same race.
+
+   Titles, not ids. Article ids are dense 0..N-1 in parse order, so the next
+   dump shifts every one of them and an id-based link would quietly start
+   pointing at a different article — a link that breaks silently is worse than
+   one that breaks loudly. Titles survive a refresh, and the server resolves
+   them through redirects.
+
+   The daily gets a clean URL instead: it is defined by the day, so pinning
+   its endpoints would hand someone yesterday's race. */
+function raceUrl(p) {
+  const u = new URL(location.href);
+  u.search = '';
+  if (p && p.number == null && p.start && p.goal) {
+    u.searchParams.set('from', p.start.title);
+    u.searchParams.set('to', p.goal.title);
+  }
+  return u.toString();
+}
+
+function setRaceUrl(p) {
+  state.url = raceUrl(p);
+  // replaceState, not pushState: a race is not a place you go Back to, and
+  // filling the history with one entry per race would trap the player.
+  history.replaceState(null, '', state.url);
+}
+
+async function copyText(text, btn, label) {
+  try {
+    // navigator.clipboard needs a secure context; a plain http:// LAN address
+    // is not one, so fall back rather than failing silently.
+    if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
+    else { const ta=document.createElement('textarea'); ta.value=text;
+           ta.style.cssText='position:fixed;opacity:0'; document.body.appendChild(ta);
+           ta.select(); document.execCommand('copy'); ta.remove(); }
+    btn.textContent='Copied!';
+  } catch { btn.textContent='Press Ctrl+C'; }
+  setTimeout(()=>{ btn.textContent=label; }, 1600);
+}
+
+$('copylink').onclick = () => copyText(state.url || location.href, $('copylink'), 'Copy race link');
 
 /* ---------------- controls ---------------- */
 // .catch(()=>{}): startRace already rendered the message into the link list,
@@ -814,85 +863,7 @@ $('post').onclick = async () => {
   }
 };
 
-$('share').onclick = async () => {
-  const b = $('share');
-  try {
-    // navigator.clipboard needs a secure context; a plain http:// LAN address
-    // is not one, so fall back rather than failing silently.
-    if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(state.share);
-    else { const ta=document.createElement('textarea'); ta.value=state.share;
-           ta.style.cssText='position:fixed;opacity:0'; document.body.appendChild(ta);
-           ta.select(); document.execCommand('copy'); ta.remove(); }
-    b.textContent='Copied!';
-  } catch { b.textContent='Press Ctrl+C'; }
-  setTimeout(()=>{ b.textContent='Copy result'; }, 1600);
-};
-
-/* ---------------- pick your own race ---------------- */
-// Two independent pickers. Each keeps the chosen id on the input element so
-// the id, not the typed text, is what gets sent — titles are not unique enough
-// to resolve server-side, and re-searching on submit could pick a different
-// article than the one shown.
-const picked = { from:null, to:null };
-
-function attachPicker(inputId, hitsId, slot) {
-  let t = null;
-  const input = $(inputId), hits = $(hitsId);
-  input.addEventListener('input', e => {
-    clearTimeout(t);
-    picked[slot] = null;
-    input.classList.remove('picked');
-    $('cgo').disabled = !(picked.from && picked.to);
-    const q = e.target.value.trim();
-    if (!q) { hits.innerHTML=''; return; }
-    t = setTimeout(async () => {
-      let res;
-      try { res = await api('/api/search?limit=6&q='+encodeURIComponent(q)); }
-      catch { return; }
-      hits.innerHTML='';
-      for (const h of res) {
-        const el = document.createElement('div');
-        el.className='hit';
-        el.innerHTML = `${esc(h.title)} <span class="tag">${h.in_degree.toLocaleString()}</span>`;
-        el.onclick = () => {
-          picked[slot] = h.id;
-          input.value = h.title;
-          input.classList.add('picked');
-          hits.innerHTML='';
-          $('cerr').textContent='';
-          $('cgo').disabled = !(picked.from && picked.to);
-        };
-        hits.appendChild(el);
-      }
-    }, 220);
-  });
-}
-attachPicker('cfrom','chitsA','from');
-attachPicker('cto','chitsB','to');
-
-$('cgo').onclick = async () => {
-  if (!picked.from || !picked.to) return;
-  if (picked.from === picked.to) {
-    $('cerr').textContent = 'Pick two different articles.';
-    return;
-  }
-  $('cerr').textContent = 'Finding the shortest route…';
-  state.trail=[]; state.steps=[]; state.cur=null; state.done=false;
-  try {
-    await startRace('/api/puzzle', `from=${picked.from}&to=${picked.to}`);
-    $('cerr').textContent='';
-    $('custom').open = false;
-  } catch (e) {
-    // A pair with no route under the current hub level is the common case, and
-    // the hub slider is the fix — say so rather than just reporting failure.
-    $('cerr').textContent = e.message || 'No route found. Try a lower hub level.';
-  }
-};
-
-// Filtering and sorting are local to the links already on screen — no request,
-// no debounce needed. Repainting a few hundred rows is imperceptible.
-$('lfilter').addEventListener('input', paintLinks);
-$('lsort').addEventListener('change', paintLinks);
+$('share').onclick = () => copyText(state.share, $('share'), 'Copy result');
 
 let timer=null;
 $('search').addEventListener('input', e => {
@@ -937,7 +908,14 @@ window.addEventListener('keydown', e => {
   } else { $('nomap').style.display='grid'; $('legend').style.display='none'; }
   resize(); requestAnimationFrame(frame);
   describeHubs();
-  startRace('/api/daily').catch(()=>{});
+  const qp = new URLSearchParams(location.search);
+  const [uf, ut] = [qp.get('from'), qp.get('to')];
+  if (uf && ut) {
+    startRace('/api/puzzle',
+      `from_title=${encodeURIComponent(uf)}&to_title=${encodeURIComponent(ut)}`).catch(()=>{});
+  } else {
+    startRace('/api/daily').catch(()=>{});
+  }
 })();
 </script>
 </body>
