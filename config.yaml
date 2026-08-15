@@ -10,7 +10,7 @@ pipeline:
                           # is only useful as a smoke test — to validate layout
                           # or communities, run the whole pipeline on
                           # Simple English Wikipedia instead.
-  data_dir: "data"          # point at data/simple to work on Simple English
+  data_dir: "data"                   # point at data/simple to work on Simple English
 
 gpu:
   store_transposed: true   # optimizes PageRank
@@ -20,7 +20,10 @@ layout:
   algorithm: "fa2"         # GPU: "fa2". CPU fallback: "drl" or "fr"
   max_iter: 500            # ForceAtlas2 iterations (GPU only)
   lin_log: false           # true = tighter clusters in FA2
-  cpu_method: "coarsened"  # CPU fallback only. "coarsened" lays out the
+  backbone_frac: 0.10        # 0 = lay out every article (slow); 0.10 = lay out the
+                           # top 10% by PageRank and place the rest at their
+                           # neighbours. 22x faster and renders more legibly.
+  cpu_method: "sfdp"  # CPU fallback only. "coarsened" lays out the
                            # community meta-graph and places articles around
                            # their community centre — seconds instead of hours.
                            # "drl"/"fr" force a direct layout on the full
