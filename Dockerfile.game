@@ -9,17 +9,24 @@
 FROM rust:1-bookworm AS build
 WORKDIR /src
 
-# Build dependencies first so a code-only change does not refetch the registry.
+# Build dependencies first so a code-only change does not refetch and rebuild
+# the whole registry. Cargo.lock must be in the build context for this — check
+# .dockerignore before assuming it is.
+#
+# Cargo auto-discovers targets from the files that exist, so stubbing only
+# src/lib.rs and src/bin/serve.rs is enough; src/main.rs (wiki-parser) and
+# src/bin/pathfind.rs simply are not targets during this layer, which is what
+# we want since the image ships neither.
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src/bin \
  && echo 'fn main(){}' > src/bin/serve.rs \
- && echo '' > src/lib.rs \
- && cargo build --release --bin serve 2>/dev/null || true \
- && rm -rf src
+ && : > src/lib.rs \
+ && cargo build --release --bin serve \
+ && rm -rf src target/release/deps/serve* target/release/serve*
 
 COPY src ./src
-# Touch so cargo does not reuse the stub's fingerprint.
-RUN touch src/bin/serve.rs src/lib.rs && cargo build --release --bin serve
+# Touch so cargo does not mistake the real sources for the stub's fingerprint.
+RUN touch src/lib.rs src/bin/serve.rs && cargo build --release --bin serve
 
 FROM debian:bookworm-slim
 RUN apt-get update \

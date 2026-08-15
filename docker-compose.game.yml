@@ -1,76 +1,70 @@
-# wiki-race behind Traefik, with automatic Let's Encrypt certificates.
+# wiki-race, the Rust game server.
 #
-#   docker compose -f docker-compose.game.yml up -d --build
+# Separate from docker-compose.yml, which runs the Python Panel/Datashader
+# viewer. Different language, different image, different data needs — they
+# share nothing but the repo.
 #
-# Set RACE_HOST and ACME_EMAIL first (a .env file next to this one works):
-#   RACE_HOST=race.example.com
-#   ACME_EMAIL=you@example.com
+# This file assumes you ALREADY run Traefik and it watches a docker network.
+# It brings no proxy of its own; it just joins that network and carries the
+# routing labels.
 #
-# For a purely local test with no domain and no TLS, run the game service
-# alone and skip Traefik entirely:
-#   docker compose -f docker-compose.game.yml up -d --build game
-#   curl localhost:8080/api/meta
-# (the game service publishes 8080 on the host for exactly this case).
+#   RACE_HOST=race.example.com docker compose -f docker-compose.game.yml up -d --build
+#
+# Environment (a .env file next to this one works):
+#   RACE_HOST         required — the hostname Traefik should route
+#   TRAEFIK_NETWORK   the external network Traefik watches (default: traefik)
+#   CERT_RESOLVER     your Traefik ACME resolver name    (default: le)
+#   DATA_DIR          where the parquet lives            (default: ./data)
 
 services:
-  traefik:
-    image: traefik:v3.1
-    restart: unless-stopped
-    command:
-      - --providers.docker=true
-      # Containers are not exposed unless they say so. Without this, every
-      # container on the host would get a route.
-      - --providers.docker.exposedbydefault=false
-      - --entrypoints.web.address=:80
-      - --entrypoints.websecure.address=:443
-      - --entrypoints.web.http.redirections.entrypoint.to=websecure
-      - --entrypoints.web.http.redirections.entrypoint.scheme=https
-      - --certificatesresolvers.le.acme.email=${ACME_EMAIL}
-      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
-      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      # Read-only: Traefik only needs to watch for container events, and a
-      # writable docker socket in a container is a host root escalation.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - letsencrypt:/letsencrypt
-
   game:
     build:
       context: .
       dockerfile: Dockerfile.game
     restart: unless-stopped
-    # --trust-proxy is REQUIRED behind Traefik and DANGEROUS without it.
-    # Without it every request appears to come from the proxy's container IP,
-    # so the per-IP rate limiter throttles all users as one bucket. With it on
-    # a directly-exposed port, any client can forge X-Forwarded-For and defeat
-    # rate limiting entirely. Drop both this flag and --secure-cookies if you
-    # run the `game` service on its own for a local test.
+    # --trust-proxy is REQUIRED behind Traefik: without it every request
+    # appears to come from Traefik's container IP, so the per-IP rate limiter
+    # throttles all users as a single bucket. It is also why the host port
+    # below is bound to loopback — on a public port, any client could forge
+    # X-Forwarded-For and defeat rate limiting entirely.
     command:
       - sh
       - -c
       - exec serve --data /data --host 0.0.0.0 --port 8080 --trust-proxy --secure-cookies
     volumes:
-      # The parquet is read-only to the service and ~1.3 GB, so it is mounted
-      # rather than baked into the image.
-      - ./data:/data:ro
-      # The HMAC secret for the signed identity cookie and the append-only
+      # THE DATA IS NOT IN GIT. `data/` is gitignored (and .dockerignore'd —
+      # data/dumps alone is 26 GB and must never enter a build context), so a
+      # fresh clone has no data and this mount would silently create an empty
+      # directory. The container then exits with "missing parser output in
+      # /data" and, thanks to restart: unless-stopped, does so in a loop.
+      # Copy the parquet to the host first:
+      #
+      #   rsync -avP data/{titles,edges,redirects,nodes}.parquet \
+      #         SERVER:/opt/wiki-graph/data/
+      #
+      # titles + edges are required. redirects (alias search) and nodes (the
+      # map) are optional — the service degrades gracefully without them.
+      - ${DATA_DIR:-./data}:/data:ro
+      # The HMAC secret backing the signed identity cookie and the append-only
       # leaderboard live here. Losing this volume invalidates every existing
-      # player cookie and the leaderboard with it.
+      # player cookie and takes the leaderboard with it.
       - state:/app
     ports:
-      # Published for the no-Traefik local case. Remove this once Traefik is
-      # fronting it, or the port bypasses TLS and the rate-limit assumptions
-      # above stop holding.
-      - "8080:8080"
+      # Loopback only: reachable for `curl localhost:8080/api/meta` on the host,
+      # not from the internet. Public traffic arrives via Traefik with TLS. Do
+      # not change this to "8080:8080" while --trust-proxy is set.
+      - "127.0.0.1:8080:8080"
+    networks:
+      - proxy
     labels:
       - traefik.enable=true
       - traefik.http.routers.wikirace.rule=Host(`${RACE_HOST}`)
       - traefik.http.routers.wikirace.entrypoints=websecure
-      - traefik.http.routers.wikirace.tls.certresolver=le
+      - traefik.http.routers.wikirace.tls.certresolver=${CERT_RESOLVER:-le}
       - traefik.http.services.wikirace.loadbalancer.server.port=8080
+      # Explicit, because Traefik guesses wrong when a container is attached to
+      # more than one network.
+      - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
     # Loading 231.7M edges into CSR needs ~4 GB and about a minute. Without a
     # limit a memory spike takes the host down instead of the container.
     deploy:
@@ -78,6 +72,10 @@ services:
         limits:
           memory: 6g
 
+networks:
+  proxy:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}
+
 volumes:
-  letsencrypt:
   state:
