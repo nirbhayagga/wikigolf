@@ -43,9 +43,16 @@ def main():
     ap.add_argument("--percentile", type=float, default=0.4,
                     help="frame between this and (100-this) percentile of coords, "
                          "so outliers and the fragment ring cannot dominate")
-    ap.add_argument("--how", default="eq_hist",
+    # Defaults are for a *dense* map. eq_hist rank-equalizes the occupied
+    # pixels, which is right when most of the canvas is empty and wrong here:
+    # on enwiki 70% of pixels hold at least one article, so equalization drags
+    # the median pixel to mid-brightness and the whole frame washes out to a
+    # flat smear. log keeps the dynamic range the density actually has.
+    ap.add_argument("--how", default="log",
                     choices=["eq_hist", "log", "cbrt", "linear"])
-    ap.add_argument("--min-alpha", type=int, default=180)
+    # Likewise the alpha floor: at 180 every occupied pixel renders at 70%
+    # opacity, so empty space and dense cores look nearly the same.
+    ap.add_argument("--min-alpha", type=int, default=40)
     ap.add_argument("--max-px", type=int, default=3, help="dynspread max radius")
     ap.add_argument("--no-spread", action="store_true")
     args = ap.parse_args()
@@ -110,6 +117,23 @@ def main():
     cvs = ds.Canvas(plot_width=args.width, plot_height=args.height,
                     x_range=xr, y_range=yr)
     agg = cvs.points(nodes, "x", "y", agg=ds.count_cat("label"))
+
+    # Report what the layout actually produced, because a bad layout and a bad
+    # render look identical in the output PNG. A force layout with real
+    # structure has a heavy-tailed density: the busiest cell holds tens or
+    # hundreds of times the mean and the median cell is well below it. Uniform
+    # random points score max/mean ~2 and median/mean ~1 — if these numbers
+    # land there, the graph was too dense to unfold and no render setting will
+    # rescue it.
+    total = agg.data.sum(axis=2).astype(np.float64)
+    occupied = total > 0
+    mean = total.mean()
+    print(f"   density: {100 * occupied.mean():.1f}% of pixels occupied, "
+          f"max/mean {total.max() / mean:.1f}x, "
+          f"median/mean {np.median(total) / mean:.2f}")
+    if args.how == "eq_hist" and occupied.mean() > 0.25:
+        print("   WARNING: eq_hist on a canvas this full flattens the image; "
+              "try --how log")
 
     # glasbey_light, not glasbey_dark: these are dark colours on a black
     # background, which is why the first renders looked washed out.
