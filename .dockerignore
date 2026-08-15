@@ -7,7 +7,10 @@ data/
 
 # Rust build artifacts
 target/
-Cargo.lock
+# NOT Cargo.lock — Dockerfile.game copies it so the image builds the exact
+# dependency versions that were tested. Excluding a lockfile from the build
+# context makes release builds non-reproducible, and here it simply broke the
+# COPY.
 
 # Git
 .git/
