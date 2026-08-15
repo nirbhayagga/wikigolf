@@ -23,6 +23,7 @@ connectivity, so those run on the symmetrized graph.
 
 import argparse
 import gc
+import json
 import os
 import sys
 import time
@@ -361,7 +362,27 @@ def _place_within_communities(mem, deg, centres, n, nc):
     return coords
 
 
-def _layout_sfdp(u, v, n, mem, cfg, paths=None):
+def _sfdp_key(u, n, cfg):
+    """What the raw SFDP positions actually depend on.
+
+    Deliberately excludes everything under `community`: the layout is built
+    from link structure alone (no `groups=`), so Leiden's resolution changes
+    only the colours. Keeping community settings out of this key is what lets
+    the map's granularity be re-tuned in Leiden-time instead of layout-time —
+    hours, at enwiki scale.
+    """
+    return json.dumps(
+        {
+            "n": int(n),
+            "edges": int(len(u)),
+            "backbone_frac": float(cfg["layout"].get("backbone_frac", 0.0) or 0.0),
+            "cpu_method": cfg["layout"].get("cpu_method", "sfdp"),
+        },
+        sort_keys=True,
+    )
+
+
+def _layout_sfdp(u, v, n, cfg, paths=None):
     """SFDP layout via graph-tool — the replacement for cuGraph's ForceAtlas2.
 
     cugraph.force_atlas2 is a legacy algorithm on cuGraph's old C++ API and
@@ -382,14 +403,26 @@ def _layout_sfdp(u, v, n, mem, cfg, paths=None):
     # the layout. (Learned the hard way: a GraphView indexing mistake threw
     # away a completed 12-minute run.)
     raw_cache = os.path.join(paths.data_dir, "cache_sfdp_raw.npz") if paths else None
+    key = _sfdp_key(u, n, cfg)
     if raw_cache and os.path.exists(raw_cache):
         z = np.load(raw_cache)
-        if len(z["in_giant"]) == n:
+        stored = str(z["key"]) if "key" in z.files else None
+        if stored is None and len(z["in_giant"]) == n:
+            # Written before the key existed. The vertex count matching is a
+            # weak check — it cannot tell a backbone layout from a full one —
+            # so say so rather than silently trusting it.
+            print(f"-> Reusing raw SFDP positions from {raw_cache} "
+                  "(no fingerprint: pre-dates this check, verify it is the "
+                  "layout you meant)")
+        elif stored == key:
             print(f"-> Reusing raw SFDP positions from {raw_cache}")
+        else:
+            print(f"   (ignoring {raw_cache}: built for a different layout)")
+            z = None
+        if z is not None:
             bb = z["backbone"] if z["backbone"].size else None
             return _sfdp_place(z["raw"], z["in_giant"], z["labels"], n,
                                bb, z["u"], z["v"])
-        print(f"   (ignoring {raw_cache}: built for a different graph)")
 
     print(f"   [CPU] Building graph-tool graph ({n:,} vertices, {len(u):,} edges)...")
     t = time.time()
@@ -468,7 +501,7 @@ def _layout_sfdp(u, v, n, mem, cfg, paths=None):
     if raw_cache:
         np.savez(raw_cache, raw=raw, in_giant=in_giant, labels=labels,
                  backbone=backbone if backbone is not None else np.zeros(0, bool),
-                 u=u, v=v)
+                 u=u, v=v, key=np.array(key))
         print(f"   raw positions cached -> {raw_cache}")
     return _sfdp_place(raw, in_giant, labels, n, backbone, u, v)
 
@@ -596,7 +629,9 @@ def _layout_cpu(u, v, n, cfg, paths=None):
     if method == "sfdp":
         del g
         gc.collect()
-        return _layout_sfdp(u, v, n, mem, cfg, paths), mem
+        # `mem` is deliberately not passed: the layout uses link structure
+        # only, so it does not depend on how Leiden was tuned.
+        return _layout_sfdp(u, v, n, cfg, paths), mem
 
     if method in ("drl", "fr"):
         print(f"   [CPU] Direct {method.upper()} layout on the full graph...")
@@ -730,7 +765,11 @@ def main():
                     help="edge sample ratio, e.g. 0.01 (smoke tests only)")
     ap.add_argument("--reset", action="store_true", help="delete ALL caches first")
     ap.add_argument("--reset-layout", action="store_true",
-                    help="delete only phase 2/3 caches, keeping PageRank")
+                    help="recompute communities and placement, keeping both "
+                         "PageRank and the cached raw SFDP positions")
+    ap.add_argument("--reset-sfdp", action="store_true",
+                    help="as --reset-layout, but also discard the raw SFDP "
+                         "positions and lay the graph out again (hours)")
     ap.add_argument("--data-dir", default=None, help="override pipeline.data_dir")
     ap.add_argument("--backbone-frac", type=float, default=None,
                     help="override layout.backbone_frac; 0 lays out every "
@@ -762,8 +801,8 @@ def main():
 
     if args.reset:
         reset_caches(paths)
-    elif args.reset_layout:
-        reset_caches(paths, layout_only=True)
+    elif args.reset_layout or args.reset_sfdp:
+        reset_caches(paths, layout_only=True, sfdp=args.reset_sfdp)
 
     paths.require_parser_outputs()
     sample = args.sample if args.sample is not None else cfg["pipeline"]["sample_ratio"]

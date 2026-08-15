@@ -97,8 +97,19 @@ class Paths:
 
         PageRank is expensive and often computed on a different machine than
         the layout, so re-tuning a layout setting must not throw it away.
+
+        Also deliberately NOT sfdp_raw. The raw positions are by far the most
+        expensive artifact in the pipeline (hours at enwiki scale) and depend
+        only on link structure, so re-running Leiden at a new resolution must
+        not destroy them. `_layout_sfdp` fingerprints that file itself and
+        rebuilds it when the graph or backbone_frac really did change; use
+        --reset-sfdp to force it.
         """
-        return [self.manifest, self.cache_layout, self.nodes, self.sfdp_raw]
+        return [self.manifest, self.cache_layout, self.nodes]
+
+    @property
+    def sfdp_caches(self):
+        return self.layout_caches + [self.sfdp_raw]
 
     @property
     def parser_outputs(self):
@@ -191,8 +202,12 @@ def check_manifest(paths, sample_ratio, cfg=None):
     return current
 
 
-def reset_caches(paths, layout_only=False):
-    for p in (paths.layout_caches if layout_only else paths.caches):
+def reset_caches(paths, layout_only=False, sfdp=False):
+    if layout_only:
+        targets = paths.sfdp_caches if sfdp else paths.layout_caches
+    else:
+        targets = paths.caches
+    for p in targets:
         if os.path.exists(p):
             os.remove(p)
             print(f"   Deleted {p}")
