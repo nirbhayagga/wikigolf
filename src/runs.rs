@@ -48,6 +48,24 @@ pub struct Run {
     pub number: Option<u64>,
     issued: Instant,
     submitted: bool,
+    /// Compass charges left. Tracked on the server because the client cannot
+    /// be trusted with a limit that is the whole point of the mechanic.
+    compass_left: u8,
+}
+
+/// Compass charges for a race of this par.
+///
+/// A flat allowance does not work, because par is not flat: most races come
+/// out at 3, and three charges on a three-click race lets you measure every
+/// move you will ever make. The compass stops being a decision and becomes
+/// the solution.
+///
+/// Scaling with par keeps the ratio honest — you can always check roughly
+/// half your moves, never all of them:
+///
+///   par 3 -> 1    par 4 -> 2    par 5 -> 3    par 6+ -> 4
+pub fn compass_charges(par: usize) -> u8 {
+    par.saturating_sub(2).clamp(1, 4) as u8
 }
 
 #[derive(Debug, PartialEq)]
@@ -63,11 +81,13 @@ pub enum RunError {
     UsedBannedHub(u32),
     TooFast,
     Expired,
+    NoCompassLeft,
 }
 
 impl RunError {
     pub fn message(&self, g: &Graph) -> String {
         match self {
+            RunError::NoCompassLeft => "no compass charges left".into(),
             RunError::UnknownRun => "unknown or expired run".into(),
             RunError::AlreadySubmitted => "this run was already submitted".into(),
             RunError::WrongStart => "path does not begin at the start article".into(),
@@ -219,6 +239,7 @@ impl Registry {
                 number: run.number,
                 issued: Instant::now(),
                 submitted: false,
+                compass_left: compass_charges(run.par),
             },
         );
         id
@@ -229,6 +250,27 @@ impl Registry {
     }
 
     /// Validate a claimed path against the graph and the issued run.
+    /// Spend one compass charge, returning the goal to measure toward and how
+    /// many charges remain.
+    ///
+    /// The charge is taken before the BFS runs, so a slow or failed lookup
+    /// still costs the player — otherwise a retry loop is free hints.
+    pub fn spend_compass(&self, id: u64) -> Result<(u32, Option<usize>, u8), RunError> {
+        let mut runs = self.runs.lock().unwrap();
+        let run = runs.get_mut(&id).ok_or(RunError::UnknownRun)?;
+        if run.submitted {
+            return Err(RunError::AlreadySubmitted);
+        }
+        if run.issued.elapsed() > MAX_RUN {
+            return Err(RunError::Expired);
+        }
+        if run.compass_left == 0 {
+            return Err(RunError::NoCompassLeft);
+        }
+        run.compass_left -= 1;
+        Ok((run.goal, run.ban_degree, run.compass_left))
+    }
+
     pub fn submit(
         &self,
         g: &Graph,
@@ -391,5 +433,34 @@ mod tests {
         assert_ne!(board_key(Some(1), "hard"), board_key(None, "hard"));
         assert_ne!(board_key(Some(1), "hard"), board_key(Some(1), "easy"));
         assert_ne!(board_key(Some(1), "hard"), board_key(Some(2), "hard"));
+    }
+}
+
+#[cfg(test)]
+mod compass_tests {
+    use super::*;
+
+    #[test]
+    fn charges_scale_with_par_and_never_cover_every_move() {
+        // The point of the scaling: on a three-click race you get one look,
+        // not three. Anything that lets you measure every move is the answer,
+        // not a hint.
+        assert_eq!(compass_charges(3), 1);
+        assert_eq!(compass_charges(4), 2);
+        assert_eq!(compass_charges(5), 3);
+        for par in 2..12 {
+            assert!(
+                (compass_charges(par) as usize) < par.max(2),
+                "par {par} would let the compass cover the whole route"
+            );
+        }
+    }
+
+    #[test]
+    fn always_at_least_one_and_never_runaway() {
+        assert_eq!(compass_charges(0), 1);
+        assert_eq!(compass_charges(1), 1);
+        assert_eq!(compass_charges(2), 1);
+        assert_eq!(compass_charges(50), 4);
     }
 }
