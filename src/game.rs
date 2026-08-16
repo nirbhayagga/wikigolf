@@ -134,6 +134,13 @@ pub struct Game {
     /// naming step has run. Empty otherwise, and the UI falls back to
     /// "Region N" — a missing label is cosmetic, never fatal.
     pub region_names: std::collections::HashMap<i32, String>,
+    /// What each article is *about*, from the wikitext's own [[Category:...]]
+    /// links. Empty when the parse predates category extraction.
+    pub categories: PerArticle,
+    /// Redirect titles pointing at each article — "also known as".
+    pub aliases: PerArticle,
+    /// Wikitext bytes per article; empty when the parse predates it.
+    pub sizes: Vec<u32>,
 }
 
 /// How deep the hub ranking goes; the slider cannot exclude more than this.
@@ -204,6 +211,7 @@ impl Rng {
 impl Game {
     pub fn load(data_dir: &Path) -> Result<Game> {
         let graph = Graph::load(data_dir)?;
+        let n_articles = graph.len();
         let layout = Layout::load(data_dir, graph.len())?;
 
         // Endpoints must be articles a player has a chance of recognising.
@@ -251,8 +259,9 @@ impl Game {
         }
         map_order.shrink_to_fit();
 
-        // Optional: only exists after 03_name_clusters.py has run.
-        let region_names = std::fs::read_to_string(data_dir.join("community_labels.json"))
+        // Optional: only exists if 03_name_clusters.py has been run.
+        let llm_names: std::collections::HashMap<i32, String> =
+            std::fs::read_to_string(data_dir.join("community_labels.json"))
             .ok()
             .and_then(|t| serde_json::from_str::<std::collections::HashMap<String, String>>(&t).ok())
             .map(|m| {
@@ -262,7 +271,35 @@ impl Game {
             })
             .unwrap_or_default();
 
-        Ok(Game { graph, layout, playable, hubs, map_order, region_names })
+        // All three are optional: an older parse simply has none of them, and
+        // every consumer degrades to showing nothing rather than failing.
+        let categories = PerArticle::load(&data_dir.join("categories.parquet"), n_articles, 8)?;
+        let aliases =
+            PerArticle::load(&data_dir.join("redirects.parquet"), n_articles, MAX_ALIASES)?;
+        let sizes = read_sizes(&data_dir.join("article_sizes.parquet"), n_articles)?;
+
+        // Region names, preferring what editors wrote over what a model
+        // guessed. A region is an emergent cluster with no category of its
+        // own, but its members carry categories, and the most common one
+        // among them is a fair name — free, deterministic, and grounded in
+        // the encyclopedia rather than in an API call.
+        let region_names = if !llm_names.is_empty() {
+            llm_names
+        } else {
+            derive_region_names(&layout, &categories, n_articles)
+        };
+
+        Ok(Game {
+            graph,
+            layout,
+            playable,
+            hubs,
+            map_order,
+            region_names,
+            categories,
+            aliases,
+            sizes,
+        })
     }
 
     /// The in-degree limit that excludes roughly the top `n` articles, with a
@@ -516,5 +553,262 @@ mod tests {
         // seed | 1 guards the xorshift fixed point at zero.
         let mut r = Rng::new(0);
         assert_ne!(r.next_u64(), 0);
+    }
+}
+
+/// Per-article string lists packed as CSR: article -> its categories, or
+/// article -> the redirect titles that point at it.
+///
+/// Stored as offsets into one shared `Vec<String>` rather than a
+/// `Vec<Vec<String>>`: at enwiki scale that is millions of separate
+/// allocations saved, and the values are read far more often than written
+/// (which is never).
+#[derive(Default)]
+pub struct PerArticle {
+    offsets: Vec<u32>,
+    values: Vec<String>,
+}
+
+impl PerArticle {
+    pub fn get(&self, id: u32) -> &[String] {
+        let i = id as usize;
+        if i + 1 >= self.offsets.len() {
+            return &[];
+        }
+        &self.values[self.offsets[i] as usize..self.offsets[i + 1] as usize]
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// Read `(u32 id, utf8 value)` rows into CSR, keeping at most `cap` per
+    /// article.
+    ///
+    /// Missing file is not an error: categories only exist after a parse that
+    /// produced them, and every caller degrades to showing nothing.
+    fn load(path: &Path, n: usize, cap: usize) -> Result<PerArticle> {
+        if !path.exists() {
+            return Ok(PerArticle::default());
+        }
+        let file = File::open(path)?;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
+
+        // Two passes over the batches would mean re-reading the file, so
+        // collect then bucket. Rows arrive in article order in practice, but
+        // nothing here depends on that.
+        let mut rows: Vec<(u32, String)> = Vec::new();
+        for batch in reader {
+            let batch = batch?;
+            let ids = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow::array::UInt32Array>()
+                .context("column 0 is not uint32")?;
+            let vals = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<arrow::array::StringArray>()
+                .context("column 1 is not utf8")?;
+            for i in 0..batch.num_rows() {
+                let id = ids.value(i);
+                if (id as usize) < n {
+                    rows.push((id, vals.value(i).to_string()));
+                }
+            }
+        }
+
+        let mut counts = vec![0u32; n + 1];
+        for (id, _) in &rows {
+            let c = &mut counts[*id as usize];
+            if (*c as usize) < cap {
+                *c += 1;
+            }
+        }
+        let mut offsets = vec![0u32; n + 1];
+        let mut running = 0u32;
+        for i in 0..n {
+            offsets[i] = running;
+            running += counts[i];
+        }
+        offsets[n] = running;
+
+        let mut values = vec![String::new(); running as usize];
+        let mut fill = offsets.clone();
+        for (id, v) in rows {
+            let i = id as usize;
+            if fill[i] < offsets[i + 1] {
+                values[fill[i] as usize] = v;
+                fill[i] += 1;
+            }
+        }
+        Ok(PerArticle { offsets, values })
+    }
+}
+
+/// Alternative titles shown per article. Wikipedia has redirects for every
+/// misspelling and abbreviation; a handful is context, the full list is noise.
+const MAX_ALIASES: usize = 5;
+
+/// Wikitext byte length per article, indexed by id. Empty when absent.
+fn read_sizes(path: &Path, n: usize) -> Result<Vec<u32>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file = File::open(path)?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
+    let mut out = vec![0u32; n];
+    for batch in reader {
+        let batch = batch?;
+        let ids = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt32Array>()
+            .context("article_sizes column 0 is not uint32")?;
+        let bytes = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow::array::UInt32Array>()
+            .context("article_sizes column 1 is not uint32")?;
+        for i in 0..batch.num_rows() {
+            let id = ids.value(i) as usize;
+            if id < n {
+                out[id] = bytes.value(i);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Name each region by the category most common among its members.
+///
+/// Replaces the LLM naming step for most purposes: an emergent Leiden cluster
+/// has no category of its own, but if 40,000 of its members are filed under
+/// "American film actors" then that is what the region is, and no model was
+/// needed to find out.
+///
+/// Only the head of each region is sampled. A region can hold hundreds of
+/// thousands of articles and the modal category converges long before that;
+/// counting all of them would cost a full pass for a label.
+fn derive_region_names(
+    layout: &Option<Layout>,
+    categories: &PerArticle,
+    n: usize,
+) -> std::collections::HashMap<i32, String> {
+    use std::collections::HashMap;
+    let Some(l) = layout.as_ref() else {
+        return HashMap::new();
+    };
+    if categories.is_empty() {
+        return HashMap::new();
+    }
+
+    const SAMPLE_PER_REGION: usize = 20_000;
+    let mut seen: HashMap<i32, usize> = HashMap::new();
+    let mut tally: HashMap<i32, HashMap<&str, u32>> = HashMap::new();
+
+    for id in 0..n {
+        let c = l.community[id];
+        let count = seen.entry(c).or_default();
+        if *count >= SAMPLE_PER_REGION {
+            continue;
+        }
+        *count += 1;
+        let e = tally.entry(c).or_default();
+        for name in categories.get(id as u32) {
+            *e.entry(name.as_str()).or_default() += 1;
+        }
+    }
+
+    tally
+        .into_iter()
+        .filter_map(|(c, counts)| {
+            counts
+                .into_iter()
+                // A category shared by two articles is a coincidence, not a
+                // region's identity.
+                .filter(|&(_, n)| n >= 3)
+                .max_by_key(|&(_, n)| n)
+                .map(|(name, _)| (c, name.to_string()))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod region_name_tests {
+    use super::*;
+
+    fn per_article(rows: &[(u32, &str)], n: usize, cap: usize) -> PerArticle {
+        let mut counts = vec![0u32; n + 1];
+        for (id, _) in rows {
+            let c = &mut counts[*id as usize];
+            if (*c as usize) < cap {
+                *c += 1;
+            }
+        }
+        let mut offsets = vec![0u32; n + 1];
+        let mut running = 0;
+        for i in 0..n {
+            offsets[i] = running;
+            running += counts[i];
+        }
+        offsets[n] = running;
+        let mut values = vec![String::new(); running as usize];
+        let mut fill = offsets.clone();
+        for (id, v) in rows {
+            let i = *id as usize;
+            if fill[i] < offsets[i + 1] {
+                values[fill[i] as usize] = v.to_string();
+                fill[i] += 1;
+            }
+        }
+        PerArticle { offsets, values }
+    }
+
+    fn flat_layout(communities: Vec<i32>) -> Option<Layout> {
+        let n = communities.len();
+        Some(Layout { x: vec![0.0; n], y: vec![0.0; n], community: communities })
+    }
+
+    #[test]
+    fn a_region_is_named_by_its_commonest_category() {
+        // Region 0 is four physicists, region 1 is four footballers.
+        let layout = flat_layout(vec![0, 0, 0, 0, 1, 1, 1, 1]);
+        let cats = per_article(
+            &[
+                (0, "Physicists"),
+                (1, "Physicists"),
+                (2, "Physicists"),
+                (3, "Physicists"),
+                (3, "Nobel laureates"),
+                (4, "Footballers"),
+                (5, "Footballers"),
+                (6, "Footballers"),
+                (7, "Footballers"),
+                (7, "Cyclists"),
+            ],
+            8,
+            8,
+        );
+        let names = derive_region_names(&layout, &cats, 8);
+        assert_eq!(names.get(&0).map(String::as_str), Some("Physicists"));
+        assert_eq!(names.get(&1).map(String::as_str), Some("Footballers"));
+    }
+
+    #[test]
+    fn a_category_shared_by_two_articles_is_not_a_region_name() {
+        // Below the floor. Without it, a coincidence between a couple of
+        // articles would become the name of a whole region.
+        let layout = flat_layout(vec![0, 0, 0, 0]);
+        let cats = per_article(&[(0, "Rare"), (1, "Rare")], 4, 8);
+        assert!(derive_region_names(&layout, &cats, 4).is_empty());
+    }
+
+    #[test]
+    fn no_layout_or_no_categories_yields_no_names() {
+        let cats = per_article(&[(0, "X"), (1, "X"), (2, "X")], 4, 8);
+        assert!(derive_region_names(&None, &cats, 4).is_empty());
+        let layout = flat_layout(vec![0; 4]);
+        assert!(derive_region_names(&layout, &PerArticle::default(), 4).is_empty());
     }
 }

@@ -154,6 +154,8 @@
   .end .val { font-size:17px; font-weight:640; line-height:1.25; }
   .end .val.to { color:var(--to); }
   .end .sub { color:var(--dim); font-size:11px; font-family:var(--mono); }
+  #curcats { color:var(--accent2); font-family:inherit; font-size:11.5px; margin-top:2px; }
+  #curalias { color:var(--faint); font-family:inherit; font-size:11px; margin-top:1px; }
   .rail { border-left:2px dotted var(--line2); height:12px; margin-left:5px; }
 
   /* links */
@@ -190,7 +192,12 @@
   .link:hover:not(:disabled) { background:var(--hover); }
   .link:disabled { opacity:.44; cursor:not-allowed; }
   .dot { width:9px; height:9px; border-radius:50%; flex:none; }
-  .link .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .link { align-items:flex-start; }
+  .link .name { flex:1; min-width:0; overflow:hidden; }
+  .link .name > .cats { display:block; color:var(--faint); font-size:10.5px;
+                        line-height:1.35; overflow:hidden; text-overflow:ellipsis;
+                        white-space:nowrap; }
+  .dot, .link .tag { margin-top:3px; }
   .tag { font-size:10.5px; font-family:var(--mono); color:var(--faint); }
   .tag.lock { color:var(--locked); }
   .empty { color:var(--dim); padding:22px 16px; text-align:center; }
@@ -432,6 +439,8 @@
         <div class="lbl">You are at</div>
         <div class="val" id="cur">&mdash;</div>
         <div class="sub" id="curmeta"></div>
+        <div class="sub" id="curcats"></div>
+        <div class="sub" id="curalias"></div>
       </div>
     </div>
     <div class="rail"></div>
@@ -717,7 +726,13 @@ async function go(id, isBack) {
   const clicks = Math.max(0, state.trail.length-1);
   $('cur').textContent = d.title;
   $('curmeta').textContent =
-    `${d.links.length.toLocaleString()} links out · ${d.in_degree.toLocaleString()} in`;
+    `${d.links.length.toLocaleString()} links out · ${d.in_degree.toLocaleString()} in` +
+    // Article size: a stub and a 600 KB monster are very different places to
+    // be standing, and the dump gives the number away for free.
+    (d.bytes ? ` · ${d.bytes >= 1024 ? Math.round(d.bytes/1024)+' KB' : d.bytes+' B'}` : '');
+  $('curcats').textContent = (d.cats || []).join(' · ');
+  $('curalias').textContent = (d.aliases || []).length
+    ? 'also: ' + d.aliases.join(', ') : '';
   $('clicks').textContent = clicks;
   $('clicks').className = state.par!=null && clicks>state.par ? 'par-over' : 'par-ok';
   $('trail').innerHTML = state.trail.map(a=>`<b>${esc(a.title)}</b>`).join(' &rsaquo; ');
@@ -846,7 +861,13 @@ function linkRow(l) {
     if (l.banned) el.title = `Banned at this difficulty: ${l.in_degree.toLocaleString()} inbound links`;
     el.innerHTML =
       `<span class="dot" style="background:${l.banned?'var(--locked)':colorOf(l.community)}"></span>`+
-      `<span class="name">${esc(l.title)}</span>`+
+      `<span class="name">${esc(l.title)}` +
+        // The context a bare link list otherwise has none of. In a real
+        // article the surrounding sentence tells you what a link is; here the
+        // article's own categories do it in three words.
+        (l.cats && l.cats.length
+          ? `<span class="cats">${esc(l.cats.slice(0,3).join(' · '))}</span>` : '') +
+      `</span>`+
       (l.banned ? `<span class="tag lock">&#128274; hub</span>` : '')+
       (state.dist && state.dist[l.id] !== undefined
         ? `<span class="tag ${state.dist[l.id] <= 1 ? 'near' : 'far'}">`+

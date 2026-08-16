@@ -216,6 +216,12 @@ struct ArticleRef {
     /// keeps par honest.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     banned: bool,
+    /// What the article is about, from its own [[Category:...]] links. This is
+    /// the context a bare link list otherwise throws away — in a real article
+    /// the surrounding sentence tells you what a link is, and here nothing
+    /// does. Empty for a parse that predates category extraction.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    cats: Vec<String>,
 }
 
 fn article_ref(g: &Game, id: u32) -> ArticleRef {
@@ -230,6 +236,7 @@ fn article_ref_banned(g: &Game, id: u32, banned: bool) -> ArticleRef {
     ArticleRef {
         id,
         title: g.graph.title(id).to_string(),
+        cats: g.categories.get(id).to_vec(),
         x,
         y,
         community,
@@ -251,6 +258,14 @@ struct ArticleDetail {
     #[serde(flatten)]
     article: ArticleRef,
     links: Vec<ArticleRef>,
+    /// Redirect titles pointing here — "also known as". Already in memory for
+    /// search; this just stops throwing it away at the boundary.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    aliases: Vec<String>,
+    /// Wikitext bytes. A rough "is this a stub or a monster" signal, and the
+    /// dump gives it away for free.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bytes: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -467,7 +482,12 @@ async fn article(
                 article_ref_banned(&s.game, v, blocked)
             })
             .collect();
-        ArticleDetail { article: article_ref(&s.game, id), links }
+        ArticleDetail {
+            article: article_ref(&s.game, id),
+            links,
+            aliases: s.game.aliases.get(id).to_vec(),
+            bytes: s.game.sizes.get(id as usize).copied().filter(|&b| b > 0),
+        }
     })
     .await;
     match out {
