@@ -198,7 +198,8 @@ fn main() -> Result<()> {
     eprintln!("\n[2/2] Extracting links");
     let (reader2, child2) = open(&args.dump, &decompressor)?;
     let edges_path = args.out.join("edges.parquet");
-    let p2 = edges::build(reader2, &idx, &ns, &opts, &edges_path)?;
+    let cats_path = args.out.join("categories.parquet");
+    let (p2, sizes) = edges::build(reader2, &idx, &ns, &opts, &edges_path, &cats_path)?;
     reap(child2)?;
 
     eprintln!("   pages scanned:      {:>12}", p2.pages_scanned);
@@ -223,6 +224,29 @@ fn main() -> Result<()> {
         eprintln!("   ⚠ duplicate source pages skipped: {}", p2.duplicate_pages);
     }
     eprintln!("   → {} ({} edges)", edges_path.display(), p2.edges_written);
+
+    // Categories and article sizes ride along on pass 2: both are gathered
+    // where the wikitext is already in hand, and neither is worth its own
+    // traversal of a 27 GB dump.
+    eprintln!(
+        "   categories kept:    {:>12}  (dropped {} maintenance)",
+        p2.categories_written, p2.categories_skipped_maintenance
+    );
+    eprintln!("   → {} ({} rows)", cats_path.display(), p2.categories_written);
+
+    let sizes_path = args.out.join("article_sizes.parquet");
+    let n_sizes = output::write_sizes(&sizes_path, &sizes)?;
+    let median = {
+        let mut v: Vec<u32> = sizes.iter().copied().filter(|&s| s > 0).collect();
+        v.sort_unstable();
+        v.get(v.len() / 2).copied().unwrap_or(0)
+    };
+    eprintln!(
+        "   → {} ({} rows, median article {} bytes)",
+        sizes_path.display(),
+        n_sizes,
+        median
+    );
 
     let secs = started.elapsed().as_secs_f64();
     eprintln!("\nGraph: {} nodes, {} edges", idx.n_articles, p2.edges_written);

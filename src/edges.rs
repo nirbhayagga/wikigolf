@@ -7,8 +7,8 @@
 
 use crate::dump::{stream_pages, Page, Progress};
 use crate::index::TitleIndex;
-use crate::output::EdgeWriter;
-use crate::titles::{normalize_title, NsPrefixes};
+use crate::output::{CategoryWriter, EdgeWriter};
+use crate::titles::{is_maintenance_category, normalize_title, NsPrefixes};
 use crate::wikitext::{for_each_link, CleanOpts, Cleaner};
 use anyhow::Result;
 use std::io::BufRead;
@@ -24,7 +24,17 @@ pub struct Pass2Stats {
     pub duplicate_links: u64,
     pub duplicate_pages: u64,
     pub edges_written: u64,
+    pub categories_written: u64,
+    pub categories_skipped_maintenance: u64,
 }
+
+/// Categories kept per article, in the order the wikitext lists them.
+///
+/// Articles carry a long tail of increasingly specific categories; the first
+/// few are the ones an editor considered defining, and they are what a player
+/// needs to know what an article is. Keeping all of them would multiply the
+/// output several times over for labels nobody reads.
+const MAX_CATEGORIES_PER_ARTICLE: usize = 6;
 
 pub fn build<R: BufRead>(
     input: R,
@@ -32,8 +42,14 @@ pub fn build<R: BufRead>(
     ns: &NsPrefixes,
     opts: &CleanOpts,
     out_path: &Path,
-) -> Result<Pass2Stats> {
+    cats_path: &Path,
+) -> Result<(Pass2Stats, Vec<u32>)> {
     let mut writer = EdgeWriter::create(out_path)?;
+    let mut cats = CategoryWriter::create(cats_path)?;
+    // Wikitext byte length per article, indexed by dense id. The dump hands it
+    // over for free while the text is already in memory.
+    let mut sizes = vec![0u32; idx.n_articles as usize];
+    let mut page_cats: Vec<String> = Vec::with_capacity(16);
     let mut cleaner = Cleaner::new();
     let mut targets: Vec<u32> = Vec::with_capacity(4096);
     let mut st = Pass2Stats::default();
@@ -64,6 +80,33 @@ pub fn build<R: BufRead>(
         progress.tick(st.pages_scanned);
 
         targets.clear();
+        page_cats.clear();
+        sizes[src as usize] = p.text.len().min(u32::MAX as usize) as u32;
+
+        // Categories come from the RAW wikitext, not the cleaned text.
+        //
+        // Cleaning truncates the article at the first citation section, and
+        // categories sit below those sections at the very bottom of the page.
+        // Reading them from the cleaned text lost them for every article with
+        // a References heading — measured at 70% of Simple English, including
+        // United States, Cat and Albert Einstein.
+        //
+        // They are metadata rather than body links, so the flags that decide
+        // what counts as a *link* have no business deciding what counts as a
+        // category either.
+        for_each_link(&p.text, |raw| {
+            if page_cats.len() >= MAX_CATEGORIES_PER_ARTICLE {
+                return;
+            }
+            if let Some(c) = ns.category(raw) {
+                if is_maintenance_category(&c) {
+                    st.categories_skipped_maintenance += 1;
+                } else if !page_cats.contains(&c) {
+                    page_cats.push(c);
+                }
+            }
+        });
+
         let cleaned = cleaner.clean(&p.text, opts);
 
         for_each_link(cleaned, |raw| {
@@ -96,6 +139,11 @@ pub fn build<R: BufRead>(
         targets.dedup();
         st.duplicate_links += (before - targets.len()) as u64;
 
+        for c in page_cats.iter() {
+            cats.push(src, c)?;
+            st.categories_written += 1;
+        }
+
         for &dst in targets.iter() {
             writer.push(src, dst)?;
         }
@@ -104,7 +152,8 @@ pub fn build<R: BufRead>(
 
     progress.done(st.pages_scanned);
     st.edges_written = writer.finish()?;
-    Ok(st)
+    st.categories_written = cats.finish()?;
+    Ok((st, sizes))
 }
 
 #[cfg(test)]
@@ -144,10 +193,75 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("wpe-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("edges-{seq}.parquet"));
-        let st = build(Cursor::new(XML), &idx, &ns, &opts, &path).unwrap();
+        let cpath = dir.join(format!("cats-{seq}.parquet"));
+        let (st, _sizes) =
+            build(Cursor::new(XML), &idx, &ns, &opts, &path, &cpath).unwrap();
         let edges = read_back(&path);
         std::fs::remove_file(&path).ok();
+        std::fs::remove_file(&cpath).ok();
         (st, idx, edges)
+    }
+
+    /// Run pass 2 and hand back what it recorded besides edges.
+    fn run_extras(opts: CleanOpts) -> (Pass2Stats, Vec<(u32, String)>, Vec<u32>) {
+        let (idx, dump, _) = index::build(Cursor::new(XML)).unwrap();
+        let ns = NsPrefixes::from_dump(&dump.namespaces);
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1000);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("wpe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("edges-{seq}.parquet"));
+        let cpath = dir.join(format!("cats-{seq}.parquet"));
+        let (st, sizes) =
+            build(Cursor::new(XML), &idx, &ns, &opts, &path, &cpath).unwrap();
+
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+        let file = std::fs::File::open(&cpath).unwrap();
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file).unwrap().build().unwrap();
+        let mut cats = Vec::new();
+        for batch in reader {
+            let batch = batch.unwrap();
+            let ids = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow::array::UInt32Array>()
+                .unwrap();
+            let names = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<arrow::array::StringArray>()
+                .unwrap();
+            for i in 0..batch.num_rows() {
+                cats.push((ids.value(i), names.value(i).to_string()));
+            }
+        }
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_file(&cpath).ok();
+        (st, cats, sizes)
+    }
+
+    #[test]
+    fn categories_are_kept_and_edges_are_not_affected() {
+        let (st, cats, _) = run_extras(CleanOpts::default());
+        // The fixture's only category link is [[Category:Politics]].
+        assert!(
+            cats.iter().any(|(_, c)| c == "Politics"),
+            "expected Politics among {cats:?}"
+        );
+        // Still counted as a skipped namespace link — categories are collected
+        // in addition to being excluded from the graph, never instead.
+        assert!(st.skipped_namespace >= 1);
+        assert_eq!(st.categories_written as usize, cats.len());
+    }
+
+    #[test]
+    fn article_sizes_are_recorded_per_id() {
+        let (_, _, sizes) = run_extras(CleanOpts::default());
+        assert!(!sizes.is_empty());
+        assert!(
+            sizes.iter().any(|&b| b > 0),
+            "every article in the fixture has wikitext, so some size must be non-zero"
+        );
     }
 
     fn read_back(path: &Path) -> Vec<(u32, u32)> {
