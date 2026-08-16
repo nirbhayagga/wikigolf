@@ -4,6 +4,7 @@ Reads config.yaml for model and rate limit settings.
 Saves progress after every call (crash-resilient).
 """
 
+import argparse
 import os
 import sys
 import time
@@ -19,6 +20,13 @@ from common import Paths, load_config  # noqa: E402
 def main():
     t0 = time.time()
 
+    ap = argparse.ArgumentParser(description="Name communities with Gemini")
+    ap.add_argument("--data-dir", default=None, help="override pipeline.data_dir")
+    ap.add_argument("--top-n", type=int, default=None,
+                    help="override community.top_n — raise it with "
+                         "community.resolution, or the extra communities go unnamed")
+    args = ap.parse_args()
+
     if "GEMINI_API_KEY" not in os.environ:
         print("Skipping: GEMINI_API_KEY not set.")
         print("  export GEMINI_API_KEY='your_key'")
@@ -26,8 +34,8 @@ def main():
 
     cfg = load_config()
     config = dict(cfg["gemini"])
-    config["top_n"] = cfg["community"]["top_n"]
-    paths = Paths(cfg["pipeline"]["data_dir"])
+    config["top_n"] = args.top_n or cfg["community"]["top_n"]
+    paths = Paths(args.data_dir or cfg["pipeline"]["data_dir"])
     if not os.path.exists(paths.nodes):
         raise SystemExit(f"{paths.nodes} not found. Run 01_graph_compute.py first.")
 
