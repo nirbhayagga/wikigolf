@@ -163,6 +163,18 @@
   #lfilter { flex:1; min-width:0; padding:6px 9px; font-size:13px; }
   #lsort { padding:6px 8px; font-size:12px; }
   #lcount { flex:none; font-family:var(--mono); letter-spacing:.2px; white-space:nowrap; }
+  .gtog { display:flex; align-items:center; gap:4px; flex:none; cursor:pointer;
+          color:var(--faint); font-size:10px; letter-spacing:1.1px; text-transform:uppercase; }
+  .gtog input { width:14px; height:14px; padding:0; accent-color:var(--accent); }
+  .ghead { display:flex; align-items:center; gap:8px; width:100%; padding:7px 10px 4px;
+           background:none; border:0; color:var(--dim); font:inherit; text-align:left;
+           cursor:pointer; border-top:1px solid var(--line); margin-top:4px; }
+  .ghead:first-child { border-top:0; margin-top:0; }
+  .ghead:hover { color:var(--text); }
+  .ghead .gname { flex:1; font-size:11.5px; font-weight:650; letter-spacing:.2px;
+                  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ghead .gdot { width:8px; height:8px; border-radius:50%; flex:none; }
+  .ghead .gcar { color:var(--faint); font-size:9px; }
   #links { overflow-y:auto; flex:1; min-height:0; padding:7px 9px; }
   /* Opaque, not translucent: the veil exists to make the options unreadable,
      so anything you could squint through would defeat it. */
@@ -436,6 +448,9 @@
   <div id="linkwrap">
     <div id="linkbar">
       <input id="lfilter" placeholder="Filter these links&hellip;">
+      <label class="gtog" title="Group links by the map region they belong to">
+        <input type="checkbox" id="lgroup" checked> group
+      </label>
       <select id="lsort" title="Sort links">
         <option value="deg">Most linked</option>
         <option value="asc">Least linked</option>
@@ -482,6 +497,7 @@ const blank = () => ({
   done:false, started:null, elapsed:0, number:null, difficulty:'easy', share:'',
   veil:null, pauseAt:0, url:'',
   compass:0, dist:null,   // charges left, and id -> clicks-to-goal for this article
+  group:true,
 });
 let state = blank();
 
@@ -493,6 +509,10 @@ async function api(p, o) {
 
 /* ---------------- map ---------------- */
 const hue = c => ((c * 2654435761) >>> 0) % 360;
+let REGIONS = {};
+const regionName = c => (c == null ? 'Unplaced'
+  : REGIONS[c] || REGIONS[String(c)] || `Region ${c}`);
+
 let TH = {};
 function readTheme() {
   const cs = getComputedStyle(document.documentElement);
@@ -720,6 +740,7 @@ async function go(id, isBack) {
 // operations — a busy article has hundreds of links, and none of this needs
 // the server.
 let CURLINKS = [];
+const COLLAPSED = new Set();
 
 function renderLinks(d) {
   CURLINKS = d.links;
@@ -778,7 +799,48 @@ function paintLinks() {
   // by that metric was the same lie in a quieter voice. In-degree is at least
   // a true fact about the graph.
   const frag = document.createDocumentFragment();
+
+  // Grouped by map region, because a flat list of several hundred links is the
+  // hardest part of this game. Real wiki-racing works because links sit inside
+  // sentences that say what they are; stripping the prose removes exactly that
+  // signal. The regions are the next best thing we already have, and they are
+  // the same ones the map is coloured by — so the list teaches the map.
+  if (state.group && !q) {
+    const by = new Map();
+    for (const l of links) {
+      const c = l.community ?? null;
+      if (!by.has(c)) by.set(c, []);
+      by.get(c).push(l);
+    }
+    const groups = [...by.entries()].sort((a, b) => b[1].length - a[1].length);
+    for (const [c, items] of groups) {
+      const h = document.createElement('button');
+      h.className = 'ghead';
+      const open = !COLLAPSED.has(c);
+      h.innerHTML =
+        `<span class="gdot" style="background:${colorOf(c)}"></span>` +
+        `<span class="gname">${esc(regionName(c))}</span>` +
+        `<span class="tag">${items.length}</span>` +
+        `<span class="gcar">${open ? '\u25be' : '\u25b8'}</span>`;
+      h.onclick = () => {
+        COLLAPSED.has(c) ? COLLAPSED.delete(c) : COLLAPSED.add(c);
+        paintLinks();
+      };
+      frag.appendChild(h);
+      if (open) for (const l of items) frag.appendChild(linkRow(l));
+    }
+    box.innerHTML = ''; box.appendChild(frag); box.scrollTop = 0;
+    return;
+  }
+
   for (const l of links) {
+    frag.appendChild(linkRow(l));
+  }
+  box.innerHTML=''; box.appendChild(frag); box.scrollTop=0;
+}
+
+/// One row. Shared by the flat and grouped renderings so they cannot drift.
+function linkRow(l) {
     const el = document.createElement('button');
     el.className='link'; el.disabled = !!l.banned;
     if (l.banned) el.title = `Banned at this difficulty: ${l.in_degree.toLocaleString()} inbound links`;
@@ -792,9 +854,7 @@ function paintLinks() {
           `</span>` : '')+
       `<span class="tag">${l.in_degree.toLocaleString()}</span>`;
     if (!l.banned) el.onclick = () => go(l.id);
-    frag.appendChild(el);
-  }
-  box.innerHTML=''; box.appendChild(frag); box.scrollTop=0;
+    return el;
 }
 
 function routeHtml(path, mine) {
@@ -1185,6 +1245,7 @@ $('cgo').onclick = async () => {
 // no debounce needed. Repainting a few hundred rows is imperceptible.
 $('lfilter').addEventListener('input', paintLinks);
 $('lsort').addEventListener('change', paintLinks);
+$('lgroup').addEventListener('change', e => { state.group = e.target.checked; paintLinks(); });
 
 let timer=null;
 $('search').addEventListener('input', e => {
@@ -1236,6 +1297,7 @@ window.addEventListener('keydown', e => {
 (async function init(){
   setTheme(localStorage.getItem('wr-theme') || 'midnight');
   META = await api('/api/meta');
+  try { REGIONS = await api('/api/regions'); } catch { REGIONS = {}; }
   $('mapmeta').textContent =
     `${META.articles.toLocaleString()} articles · ${META.edges.toLocaleString()} links`;
   if (META.has_map) {
