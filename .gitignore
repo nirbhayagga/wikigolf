@@ -28,10 +28,6 @@ cufile.log
 *.md
 !README.md
 
-# Generated report, same convention as the *.md audits above. Scoped to the
-# root so static/index.html — which the game actually serves — stays tracked.
-/RUNBOOK.html
-
 # Conversation transcripts dropped in the repo root by /export. Date-prefixed
 # and root-scoped so python/requirements.txt is not caught by it.
 /20??-??-??-*.txt

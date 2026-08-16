@@ -1,0 +1,75 @@
+# wiki-race published directly on a host port. No proxy, no TLS, no Traefik.
+#
+# Use this INSTEAD of docker-compose.game.yml, not alongside it — they are two
+# complete files rather than a base and an override, because the differences
+# are exactly the ones Compose's list-merging handles badly (you cannot remove
+# a network or a command flag by overriding).
+#
+#   docker compose -f docker-compose.game.direct.yml up -d --build   # build here
+#   IMAGE=git.example.com/you/wikigolf:latest \
+#     docker compose -f docker-compose.game.direct.yml up -d         # prebuilt
+#
+# For: a LAN, a box behind someone else's proxy, or a first look before
+# committing to a reverse proxy setup.
+#
+# Environment (a .env file next to this one works):
+#   PORT      host port to publish        (default: 8080)
+#   BIND      interface to publish on     (default: 0.0.0.0, i.e. everywhere)
+#   DATA_DIR  where the parquet lives     (default: ./data)
+#   IMAGE     prebuilt image to run instead of building here
+
+services:
+  game:
+    image: ${IMAGE:-wiki-graph-game:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.game
+    restart: unless-stopped
+
+    # NEITHER --trust-proxy NOR --secure-cookies, and for different reasons.
+    #
+    # --trust-proxy makes the server believe X-Forwarded-For. With nothing in
+    # front to overwrite that header, any client can forge it and defeat the
+    # per-IP rate limiter completely.
+    #
+    # --secure-cookies marks the identity cookie Secure, and browsers never
+    # send a Secure cookie over plain http. Every request would look like a new
+    # player and the leaderboard would quietly stop attributing runs.
+    #
+    # Put either back only when something is terminating TLS in front.
+    command:
+      - sh
+      - -c
+      - exec serve --data /data --state /state --host 0.0.0.0 --port 8080
+
+    volumes:
+      # THE DATA IS NOT IN GIT. A fresh clone has no data/ and this mount would
+      # silently create an empty directory; the container then exits with
+      # "missing parser output in /data" and restarts forever. Copy the parquet
+      # to the host first — titles and edges are required, redirects (alias
+      # search) and nodes (the map) are optional.
+      - ${DATA_DIR:-./data}:/data:ro
+      # Writable state, kept out of /data so the parquet stays read-only.
+      # Holds leaderboard.jsonl and the HMAC key behind the identity cookie;
+      # losing this volume logs every player out and erases the leaderboard.
+      - state:/state
+
+    ports:
+      # Published on every interface by default, which is the point of this
+      # file. BIND=127.0.0.1 restricts it to the host if you only want to look.
+      #
+      # This is an unauthenticated service: on a LAN that is fine, on untrusted
+      # wifi or a public IP it is a decision, not a default.
+      - "${BIND:-0.0.0.0}:${PORT:-8080}:8080"
+
+    # Loading 231.7M edges into CSR needs ~4 GB and about a minute; measured at
+    # 3.79 GB resident once up. The limit cannot protect a host with less RAM
+    # than the limit — the kernel OOM killer takes the process first, and it
+    # presents as an unexplained restart loop rather than an error.
+    deploy:
+      resources:
+        limits:
+          memory: 6g
+
+volumes:
+  state:

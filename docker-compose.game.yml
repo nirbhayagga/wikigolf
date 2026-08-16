@@ -15,6 +15,8 @@
 #   TRAEFIK_NETWORK   the external network Traefik watches (default: traefik)
 #   ENTRYPOINT        Traefik's https entrypoint name    (default: websecure)
 #   DATA_DIR          where the parquet lives            (default: ./data)
+#   IMAGE             prebuilt image to run instead of building here, e.g.
+#                     git.example.com/you/wikigolf:latest
 #   CERT_RESOLVER     only for a public deploy — see the certresolver label
 #
 # Local wildcard setup (*.local.example.com), which is what this defaults to:
@@ -40,6 +42,12 @@
 
 services:
   game:
+    # Both keys on purpose. `docker compose up -d --build` compiles here;
+    # `docker compose pull && up -d` takes a prebuilt image and never needs a
+    # toolchain. Building on the server costs 2-3 GB of RAM and pulls a ~1.5 GB
+    # Rust image, which is most of the headroom on a 6 GB box — so build on a
+    # machine that has cores to spare and let the server just pull.
+    image: ${IMAGE:-wiki-graph-game:latest}
     build:
       context: .
       dockerfile: Dockerfile.game
