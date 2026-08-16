@@ -102,6 +102,48 @@ impl NsPrefixes {
             None => false,
         }
     }
+
+    /// The category name in `[[Category:Living people]]`, or None.
+    ///
+    /// Categories are the only namespace worth keeping: they are
+    /// human-authored topic labels sitting in the wikitext of every article,
+    /// and they answer "what is this about" without storing a word of prose.
+    ///
+    /// A sort key after a pipe is dropped — `[[Category:Foo|Bar]]` files the
+    /// article under Foo and only sorts it as "Bar".
+    pub fn category(&self, title: &str) -> Option<String> {
+        let i = title.find(':')?;
+        if !title[..i].trim().eq_ignore_ascii_case("category") {
+            return None;
+        }
+        let rest = title[i + 1..].split('|').next()?.trim();
+        if rest.is_empty() {
+            return None;
+        }
+        normalize_title(rest)
+    }
+}
+
+/// Categories that describe the *edit state* of an article rather than its
+/// subject. Wikipedia has thousands of them and they are on a large share of
+/// articles, so leaving them in would bury the real topics under
+/// "Articles with dead external links".
+pub fn is_maintenance_category(name: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "Articles ", "All articles", "Wikipedia ", "CS1 ", "Webarchive",
+        "Pages ", "All pages", "Use dmy dates", "Use mdy dates",
+        "Short description", "Commons category", "Coordinates ",
+        "Official website", "Good articles", "Featured articles",
+        "Redirects ", "All redirects", "Template ", "Interlanguage ",
+        "Harv and Sfn", "AC with ", "Vague or ambiguous",
+    ];
+    const CONTAINS: &[&str] = &[
+        "maint:", "errors", "stub", "with unsourced", "needing", "lacking",
+        "from ", "dead external links", "unreferenced", "cleanup",
+    ];
+    let lower = name.to_lowercase();
+    PREFIXES.iter().any(|p| name.starts_with(p))
+        || CONTAINS.iter().any(|c| lower.contains(c))
 }
 
 #[cfg(test)]

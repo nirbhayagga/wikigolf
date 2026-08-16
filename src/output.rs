@@ -122,3 +122,96 @@ where
     writer.close()?;
     Ok(total)
 }
+
+/// Article-to-category membership, plus the article's wikitext size.
+///
+/// Two outputs from one pass because they are gathered in the same place and
+/// neither is worth its own traversal of a 27 GB dump.
+///
+/// Categories are stored as strings rather than interned ids: there are only
+/// a few hundred thousand distinct ones after maintenance filtering, parquet
+/// dictionary-encodes repeated values anyway, and an id table would mean a
+/// second file and a join for no measurable gain.
+pub struct CategoryWriter {
+    writer: ArrowWriter<File>,
+    schema: Arc<Schema>,
+    ids: Vec<u32>,
+    names: Vec<String>,
+    total: u64,
+}
+
+impl CategoryWriter {
+    pub fn create(path: &Path) -> Result<Self> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("article_id", DataType::UInt32, false),
+            Field::new("category", DataType::Utf8, false),
+        ]));
+        Ok(CategoryWriter {
+            writer: ArrowWriter::try_new(File::create(path)?, schema.clone(), Some(props()?))?,
+            schema,
+            ids: Vec::with_capacity(BATCH_ROWS),
+            names: Vec::with_capacity(BATCH_ROWS),
+            total: 0,
+        })
+    }
+
+    pub fn push(&mut self, id: u32, name: &str) -> Result<()> {
+        self.ids.push(id);
+        self.names.push(name.to_string());
+        self.total += 1;
+        if self.ids.len() >= BATCH_ROWS {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if self.ids.is_empty() {
+            return Ok(());
+        }
+        let batch = RecordBatch::try_new(
+            self.schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from(std::mem::take(&mut self.ids))),
+                Arc::new(StringArray::from(std::mem::take(&mut self.names))),
+            ],
+        )?;
+        self.writer.write(&batch)?;
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<u64> {
+        self.flush()?;
+        self.writer.close()?;
+        Ok(self.total)
+    }
+}
+
+/// Per-article wikitext byte length, indexed by dense article id.
+///
+/// One u32 per article — 29 MB at enwiki scale — and it is the cheapest
+/// "how substantial is this article" signal available, since the dump hands
+/// it over for free while the text is already in memory.
+pub fn write_sizes(path: &Path, sizes: &[u32]) -> Result<u64> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::UInt32, false),
+        Field::new("bytes", DataType::UInt32, false),
+    ]));
+    let mut writer = ArrowWriter::try_new(File::create(path)?, schema.clone(), Some(props()?))?;
+    // Ids continue across chunks; restarting them at zero per batch would
+    // silently give every article after the first batch the wrong size.
+    for (i, chunk) in sizes.chunks(BATCH_ROWS).enumerate() {
+        let base = (i * BATCH_ROWS) as u32;
+        writer.write(&RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(
+                    base..base + chunk.len() as u32,
+                )),
+                Arc::new(UInt32Array::from(chunk.to_vec())),
+            ],
+        )?)?;
+    }
+    writer.close()?;
+    Ok(sizes.len() as u64)
+}
