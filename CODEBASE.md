@@ -89,6 +89,22 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 | `07_incremental.py` | 92 | either | Cache status and reset. |
 | `08_export_gephi.py` | 82 | laptop | Exports the high-PageRank core as Gephi CSVs for the LinLog test. |
 | `09_pageviews.py` | 143 | laptop | Joins Wikimedia monthly pageviews onto article ids. |
+
+### Endpoints the game serves
+
+| Route | Cost | Notes |
+|---|---|---|
+| `/api/meta` | 17 ms | Article and edge counts, map bounds. |
+| `/api/regions` | free | Region names, from categories or the LLM file. |
+| `/api/map` | 15 ms | 45k points, 1.72 MB, ETag so repeats are free. |
+| `/api/article/{id}` | 3.7 ms | Links with their categories, plus aliases and byte size. |
+| `/api/search` | ~100 ms | Linear scan of 7.2M titles. The first bottleneck under load. |
+| `/api/path` | 22 ms | Bidirectional BFS. |
+| `/api/puzzle` | 41 ms | Also accepts `from`/`to` (ids) or `from_title`/`to_title`. |
+| `/api/daily` | 41 ms | Seeded by the day. |
+| `/api/compass` | 1.4 s first per goal | Then cached; charges scale with par. |
+| `/api/routes` | 31–142 ms | Shortest-route count, asked after the race. |
+| `/api/submit` · `/api/leaderboard` | — | Re-walks the submitted path; never trusts a score. |
 | `diag_gpu.py` | 146 | PC | Bisects the cuGraph ForceAtlas2 segfault. Kept as a record; FA2 is dead. |
 
 ### Load-bearing details
@@ -186,6 +202,12 @@ mount that read-only and the process dies at startup otherwise.
   layout does not rescue it.
 - **72.3% of playable pairs are par 3.** Rejection sampling cannot produce a
   difficulty curve; a precomputed distance matrix is the only practical route.
+  Size it at 20,000 articles (400 MB) not 50,000 (2.5 GB) — the larger table
+  would thrash a 6 GB server, and the tail of the 50k pool is where races like
+  "Legong → Bara Jumla" come from. It is a per-dump artifact built on the PC in
+  ~40 min, never on the server, where it would take ~7 hours and peg the box.
+- **One BFS per source yields distance *and* route count together**, so both
+  come out of the same pass at no extra cost.
 - **The page is embedded with `include_str!`.** A broken `static/index.html`
   cannot fail the build — it ships. Two tests in `bin/serve.rs` guard against
   that after a slice-based edit once silently deleted the whole custom-race
