@@ -8,7 +8,7 @@ A pipeline that turns the English Wikipedia XML dump into an interactive force-d
 
 This is a **content project** — a public explorable map, quotable statistics, and a poster-grade render — so numbers stated publicly have to survive being checked. That is why the parser is strict about what counts as an article.
 
-`codebase_reference.md` is a detailed per-file audit written 2026-06-24 — read it for deep context on any single file, but verify against the source since it can drift.
+`CODEBASE.md` is the per-file reference: every Rust module and Python script, every data file with its real size, the endpoint surface, and the measurements. It is tracked, unlike the generated audit it replaced.
 
 ## Commands
 
