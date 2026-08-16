@@ -831,8 +831,31 @@ async fn landmarks(
     )
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Cap on simultaneous graph work.
+///
+/// Every concurrent request that touches the graph holds a PathFinder — 72 MB
+/// of scratch at enwiki scale, and 130 MB while counting shortest paths. The
+/// pool only caps *reuse*; `with_finder` allocates a fresh one whenever the
+/// pool is empty, so the real ceiling is however many blocking tasks tokio
+/// will run at once. That defaults to 512, which is 37 GB and an instant OOM
+/// on any machine this is likely to run on.
+///
+/// Bounding it makes the failure mode a queue instead of a crash: past this
+/// many simultaneous searches, requests wait a few milliseconds rather than
+/// taking the process down. 8 is ~600 MB of scratch, which fits the 6 GB
+/// minimum with room to spare, and is far above what 2 vCPU can actually work
+/// through concurrently.
+const BLOCKING_THREADS: usize = 8;
+
+fn main() -> Result<()> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .max_blocking_threads(BLOCKING_THREADS)
+        .build()?;
+    rt.block_on(serve())
+}
+
+async fn serve() -> Result<()> {
     let args = Args::parse();
 
     eprintln!("loading graph from {}...", args.data.display());
