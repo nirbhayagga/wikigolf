@@ -319,7 +319,8 @@
   <div id="legend" class="glass">
     <div><span class="k" style="background:var(--from)"></span><b>From</b>
          &nbsp; <span class="k" style="background:var(--to)"></span><b>Goal</b>
-         &nbsp; <span class="k" style="background:var(--trail)"></span><b>Your route</b></div>
+         &nbsp; <span class="k" style="background:var(--trail)"></span><b>Your route</b>
+         &nbsp; <span class="k" style="background:var(--accent)"></span><b>Optimal</b></div>
     <div style="margin-top:5px">Dots are articles, coloured by community.
       Links are listed by how many articles point at them &mdash; the number on
       each row.</div>
@@ -507,6 +508,7 @@ const blank = () => ({
   done:false, started:null, elapsed:0, number:null, difficulty:'easy', share:'',
   veil:null, pauseAt:0, url:'',
   compass:0, dist:null,   // charges left, and id -> clicks-to-goal for this article
+  best:null,              // the optimal route, drawn on the map once the race ends
   group:true,
 });
 let state = blank();
@@ -530,7 +532,7 @@ function readTheme() {
   TH = {
     bg: v('--canvas-bg'), ink: v('--canvas-ink'), halo: v('--canvas-halo'),
     s: v('--dot-s'), l: v('--dot-l'), a: parseFloat(v('--dot-a')) || .3,
-    from: v('--from'), to: v('--to'), trail: v('--trail'),
+    from: v('--from'), to: v('--to'), trail: v('--trail'), best: v('--accent'),
     cur: v('--text'), locked: v('--locked'),
   };
 }
@@ -598,6 +600,22 @@ function draw(t) {
       ctx.strokeText(l.title, X, Y);
       ctx.fillStyle=`rgba(${TH.ink},.72)`; ctx.fillText(l.title, X, Y);
     }
+  }
+
+  // The optimal route, drawn under your own so yours stays on top. Dashed and
+  // in the accent colour: the point of showing it is the *comparison* — where
+  // you diverged from it and how far you wandered — which only reads if both
+  // are visible at once.
+  const best = (state.best || []).filter(a => a.x != null);
+  if (best.length > 1) {
+    ctx.save();
+    ctx.strokeStyle = TH.best; ctx.globalAlpha = .85; ctx.lineWidth = 1.8;
+    ctx.setLineDash([6, 5]); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(px(best[0].x), py(best[0].y));
+    for (const p of best.slice(1)) ctx.lineTo(px(p.x), py(p.y));
+    ctx.stroke(); ctx.restore();
+    ctx.globalAlpha = 1;
+    for (const p of best.slice(1, -1)) mark(p, TH.best, 2.5);
   }
 
   const pts = state.trail.filter(a => a.x != null);
@@ -936,6 +954,8 @@ async function finish(won) {
       // and we return whichever the bidirectional search met on.
       $('route').innerHTML = routeHtml(p.path, state.trail);
       $('routelbl').textContent = `A shortest route (${p.clicks} clicks)`;
+      state.best = p.path;
+      draw();
     } else $('route').innerHTML = '<div class="empty">no route exists</div>';
   } catch { $('route').innerHTML=''; }
 
