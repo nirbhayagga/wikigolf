@@ -29,6 +29,75 @@ MAX_CATEGORIES = 24
 OTHER = "Other"
 
 
+def _transfer(total, occupied, how):
+    """Map counts to 0..1 brightness, the way tf.shade's `how` does."""
+    t = np.zeros_like(total)
+    v = total[occupied]
+    if how == "eq_hist":
+        order = v.argsort()
+        ranks = np.empty(len(v))
+        ranks[order] = np.arange(len(v))
+        t[occupied] = (ranks + 1) / len(v)
+    elif how == "log":
+        ref = np.log1p(np.percentile(v, 99.5))
+        t[occupied] = np.clip(np.log1p(v) / max(ref, 1e-9), 0, 1)
+    elif how == "cbrt":
+        ref = np.percentile(v, 99.5) ** (1 / 3)
+        t[occupied] = np.clip(v ** (1 / 3) / max(ref, 1e-9), 0, 1)
+    else:
+        ref = np.percentile(v, 99.5)
+        t[occupied] = np.clip(v / max(ref, 1e-9), 0, 1)
+    return t
+
+
+def _shade_winner(agg, cats, palette, total, occupied, args):
+    """Colour each pixel by the community that dominates it.
+
+    datashader's `tf.shade` with a `color_key` mixes the categories present in
+    a pixel in proportion to their counts. That is right for a handful of
+    categories and wrong for a hundred: at enwiki density a pixel holds
+    articles from many communities at once, and the count-weighted mean of many
+    hues is grey. Raising `community.resolution` to get legible regions made
+    the render *worse* for exactly this reason.
+
+    Taking the dominant category instead keeps every pixel at full saturation
+    and shows where one community actually owns the ground. Measured on the
+    resolution-6 layout, the winner holds 57% of its pixel on average, so this
+    is a real majority rather than an arbitrary pick — but neighbouring regions
+    do interpenetrate, which is a fact about the layout, not the render.
+    """
+    from PIL import Image as PILImage
+
+    counts = agg.data                       # (h, w, ncat)
+    who = counts.argmax(axis=2)
+    best = counts.max(axis=2)
+
+    rgb = np.array(
+        [[int(palette[i % len(palette)].lstrip("#")[j:j + 2], 16) for j in (0, 2, 4)]
+         for i in range(len(cats))],
+        dtype=np.float32,
+    )
+
+    share = np.zeros_like(total)
+    share[occupied] = best[occupied] / total[occupied]
+    print(f"   winner-take-all: dominant community holds {share[occupied].mean():.2f} "
+          f"of its pixel on average, clear majority in "
+          f"{100 * (share[occupied] > 0.5).mean():.1f}% of them")
+
+    t = _transfer(total, occupied, args.how)
+    if args.min_alpha:
+        # Same role as tf.shade's min_alpha: keep the faintest occupied pixel
+        # visible rather than letting it fade to the background.
+        floor = args.min_alpha / 255.0
+        t[occupied] = floor + (1 - floor) * t[occupied]
+
+    img = (rgb[who] * t[..., None]).clip(0, 255).astype(np.uint8)
+    img[~occupied] = 0
+    # dynspread works on a datashader Image, and is pointless here anyway:
+    # spreading exists for sparse canvases, and this one is ~70% occupied.
+    return PILImage.fromarray(img)
+
+
 def main():
     cfg = load_config()
     exp = cfg["export"]
@@ -55,6 +124,10 @@ def main():
     ap.add_argument("--min-alpha", type=int, default=40)
     ap.add_argument("--max-px", type=int, default=3, help="dynspread max radius")
     ap.add_argument("--no-spread", action="store_true")
+    ap.add_argument("--color", default="winner", choices=["winner", "blend"],
+                    help="winner: each pixel takes the colour of the community "
+                         "holding the most articles in it. blend: datashader's "
+                         "count-weighted mean, which greys out as categories rise")
     args = ap.parse_args()
 
     paths = Paths(args.data_dir or cfg["pipeline"]["data_dir"])
@@ -139,14 +212,19 @@ def main():
     # background, which is why the first renders looked washed out.
     palette = cc.glasbey_light
     color_key = {c: palette[i % len(palette)] for i, c in enumerate(cats)}
-    img = tf.shade(agg, color_key=color_key, how=args.how, min_alpha=args.min_alpha)
-    if not args.no_spread:
-        # Most pixels hold 0-1 points at this density, so isolated articles
-        # render as invisible single pixels without spreading.
-        img = tf.dynspread(img, threshold=0.35, max_px=args.max_px)
-    img = tf.set_background(img, "black")
 
-    pil = img.to_pil()
+    if args.color == "winner":
+        pil = _shade_winner(agg, cats, palette, total, occupied, args)
+    else:
+        img = tf.shade(agg, color_key=color_key, how=args.how,
+                       min_alpha=args.min_alpha)
+        if not args.no_spread:
+            # Most pixels hold 0-1 points at this density, so isolated articles
+            # render as invisible single pixels without spreading.
+            img = tf.dynspread(img, threshold=0.35, max_px=args.max_px)
+        img = tf.set_background(img, "black")
+        pil = img.to_pil()
+
     pil.save(output, "PNG")
     print(f"   Saved → {output}")
 
