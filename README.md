@@ -1,8 +1,17 @@
 # Wikipedia Graph Pipeline
 
 Parse, compute, and visualize the English Wikipedia link network — a Rust two-pass
-parser that resolves article identity, then a GPU-accelerated Python pipeline that
-computes PageRank, communities, and a force-directed layout.
+parser that resolves article identity, then a Python pipeline that computes
+PageRank, communities and a force-directed layout, plus a Rust game server that
+plays wiki-race on the same graph. Live as **[wikigolf.app](https://wikigolf.app)**.
+
+This is the public mirror of the working repository: identical code and history,
+minus the private operational runbook (deploy targets, incident log).
+Issues are welcome; pull requests are applied to the private repo by hand, with credit,
+because this history is rewritten on every refresh.
+
+Everything runs on CPU. There is no working GPU path — see
+[Layout](#layout-is-cpu-sfdp) for why.
 
 ## Architecture
 
@@ -16,7 +25,7 @@ enwiki-*-pages-articles-multistream.xml.bz2   (~27 GB)
         │
         │  01_graph_compute.py
         │    Phase 1  PageRank + in-degree      (directed)
-        │    Phase 2  ForceAtlas2 + Leiden      (undirected)
+        │    Phase 2  SFDP layout + Leiden      (undirected)
         │    Phase 3  merge + attach titles
         ▼
    nodes.parquet
@@ -25,7 +34,12 @@ enwiki-*-pages-articles-multistream.xml.bz2   (~27 GB)
         ├──▶ 03_name_clusters.py   LLM community labels
         ├──▶ 04_app.py             Panel + Datashader viewer
         ├──▶ 05_export_png.py      high-resolution PNG
-        └──▶ 06_community_stats.py per-community JSON
+        ├──▶ 06_community_stats.py per-community JSON
+        └──▶ 08_export_gephi.py    core as Gephi CSVs
+
+   titles/edges/nodes.parquet
+        │
+        └──▶ serve (Rust)          the wiki-race game, no Python at all
 ```
 
 ### The parser decides what the graph means
@@ -78,7 +92,7 @@ Sanity check on the result — the most linked-to articles:
 | Phase | Graph | Why |
 |-------|-------|-----|
 | PageRank, in-degree | Directed | Link direction is what makes an article important |
-| ForceAtlas2 layout | Undirected | Force-directed physics needs symmetric attraction |
+| SFDP layout | Undirected | Force-directed physics needs symmetric attraction |
 | Leiden communities | Undirected | Community structure is mutual connectivity |
 
 ## Getting the dump
@@ -145,15 +159,18 @@ cargo build --release
 # the real thing
 ./target/release/wiki-parser data/dumps/enwiki-20260801-pages-articles-multistream.xml.bz2 --out data
 
-# 2. Environment (RAPIDS must come from mamba, not pip)
+# 2. Environment. graph-tool does the layout and is the one hard requirement;
+# RAPIDS is optional and only accelerates PageRank.
 # One line on purpose: pasting a backslash-continued command mangles it.
-mamba create -n rapids-env -c rapidsai -c conda-forge -c nvidia rapids=24.04 python=3.11 cuda-version=12.2 python-igraph pyyaml tqdm datashader holoviews bokeh colorcet panel pillow -y
-mamba activate rapids-env
+mamba create -n wiki -c conda-forge python=3.11 graph-tool python-igraph scipy pyarrow pandas pyyaml tqdm datashader holoviews bokeh colorcet panel pillow -y
+mamba activate wiki
 pip install google-genai            # the only dep not on conda-forge
-export KVIKIO_COMPAT_MODE=ON        # Fedora: disable GPU Direct Storage
 
-# Already have a working rapids-env? Check rather than rebuild:
-python -c "import cudf,cugraph,rmm,cupy,numpy,pandas,pyarrow,scipy,yaml; print('ok')"
+# Optional: RAPIDS, for GPU PageRank only. The layout does not use it.
+# mamba install -c rapidsai -c conda-forge -c nvidia rapids=24.04 cuda-version=12.2
+# export KVIKIO_COMPAT_MODE=ON      # Fedora: disable GPU Direct Storage
+
+python -c "import graph_tool.all, igraph, scipy, pandas, pyarrow, yaml; print('ok')"
 
 # 3. Compute
 python python/01_graph_compute.py
@@ -168,15 +185,44 @@ python python/05_export_png.py --width 4096 --height 2160
 
 Set `pipeline.data_dir` (or pass `--data-dir`) to pick which of the two you work on.
 
-The pipeline runs **without a GPU** — PageRank falls back to sparse power iteration
-and layout falls back to a coarsened community layout — but the GPU path is what
-produces the real ForceAtlas2 map.
+### Layout is CPU SFDP
+
+`cugraph.force_atlas2` **segfaults and is not usable.** It is a legacy algorithm on
+cuGraph's old C++ API and dies inside `cuCtxGetDevice` against modern NVIDIA drivers
+— verified on an RTX 4080 / driver 580 on a *five vertex* graph, so it is not a
+scale or VRAM problem. A segfault is not a Python exception, so `layout.backend:
+"auto"` cannot fall back from it; the process simply dies. The default is `"cpu"`.
+
+The real layout is graph-tool's SFDP (Hu's multilevel force-directed algorithm):
+maintained C++, OpenMP-parallel, no driver dependency. Measured at full scale:
+**7,216,559 of 7,219,290 articles laid out in about ten hours** on 32 threads.
+
+**What it does not do is produce a detailed map.** Four graph sizes were laid out
+and every one came out a featureless disc:
+
+| core | nodes | avg degree | max/mean density | median/mean |
+|---|---:|---:|---:|---:|
+| 0.5% | 36,093 | 154 | 4.4× | 0.63 |
+| 1% | 72,185 | 153 | 3.8× | 0.63 |
+| 10% | 721,929 | 231 | 2.2× | 0.98 |
+| full | 7,216,559 | 58 | 3.7× | 0.56 |
+| *uniform random disc* | — | — | *1.6×* | *1.25* |
+
+Zooming into the full layout shows uniform noise: no filaments, no cores, no voids.
+The dynamic range that exists is a radial falloff, not structure. Sweeping SFDP's
+`C` and `p` made it worse, not better.
+
+The untested lever is **LinLog mode**, which ForceAtlas2 has and SFDP does not, and
+which exists specifically to separate clusters. `08_export_gephi.py` writes the
+high-PageRank core as Gephi CSVs so that can be tested interactively rather than
+overnight.
 
 ### The two halves want different machines
 
-The parser is CPU- and I/O-bound and peaks around a few hundred MB of RAM; Phase 2
-is the part that wants a GPU. Since the parser's outputs are ~1–2 GB of Parquet
-against a 27 GB dump, **parse wherever the dump already is and copy the Parquet**:
+The parser is CPU- and I/O-bound and peaks around a few hundred MB of RAM. Phase 2
+wants cores and RAM — the Leiden pass alone builds a 419M-edge igraph, roughly
+20–25 GB. Since the parser's outputs are ~1–2 GB of Parquet against a 27 GB dump,
+**parse wherever the dump already is and copy the Parquet**:
 
 ```bash
 # on the machine holding the dump
@@ -186,7 +232,7 @@ against a 27 GB dump, **parse wherever the dump already is and copy the Parquet*
 rsync -avP data/{titles,redirects,edges}.parquet desktop:~/wiki-graph/data/
 ```
 
-The GPU machine then needs neither the Rust toolchain nor the dump.
+The compute machine then needs neither the Rust toolchain nor the dump.
 
 ## Parser flags
 
@@ -210,12 +256,16 @@ decided by the parser flags above, not here.
 pipeline:
   sample_ratio: 1.0     # sampling disconnects the graph; use simplewiki instead
 layout:
-  backend: "auto"       # "auto", "gpu", "cpu"
-  max_iter: 500         # ForceAtlas2 iterations
-  cpu_method: "coarsened"  # or "drl"/"fr" for a direct layout on small graphs
+  backend: "cpu"        # NOT "auto" — see Layout above
+  cpu_method: "sfdp"    # or "coarsened"/"drl"/"fr"
+  backbone_frac: 0.10   # 0 lays out every article; 0.10 lays out the top 10%
+                        # by PageRank and places the rest at their neighbours
 community:
   objective: "modularity"
-  top_n: 20
+  resolution: 1.0       # the map's granularity dial. 1.0 gives ~25 usable
+                        # communities for 7.2M articles, which is too coarse to
+                        # read as regions; raise max_categories with it.
+  top_n: 20             # communities sent to the LLM for labelling
 ```
 
 ## Cache management
@@ -243,17 +293,55 @@ python python/01_graph_compute.py --reset  # recompute from scratch
   an uncapped render at 4K with thousands of communities would ask for hundreds
   of gigabytes.
 
-## Docker deployment
+## The wiki-race game
+
+A second Rust binary serves a wiki-race game off the same Parquet: find the
+shortest link path between two articles, racing against the optimal route the
+server computes on its own copy of the graph.
 
 ```bash
-WEBSOCKET_ORIGIN=wiki.example.com docker-compose up -d
-# http://localhost:5006
+cargo build --release --bin serve
+./target/release/serve --data data --state ./state --host 0.0.0.0 --port 8080
 ```
 
-The image carries visualization dependencies only — results are precomputed into
-Parquet, so no GPU, RAPIDS or igraph is needed to serve.
+Measured at full enwiki scale: **3.79 GB resident**, about a minute to build the
+forward and reverse CSR, then **22 ms for a bidirectional BFS** and 15 ms for the
+map endpoint. It reproduces Six Degrees of Wikipedia exactly on the same data.
+
+`nodes.parquet` is optional — without it the game degrades to a link list instead
+of refusing to start. `redirects.parquet` is optional too and only adds
+search-by-alias.
+
+## Docker deployment
+
+Two independent images that share no code.
+
+**Viewer** — Panel + Datashader, visualization dependencies only:
+
+```bash
+WEBSOCKET_ORIGIN=wiki.example.com docker-compose up -d   # http://localhost:5006
+```
+
+**Game** — the Rust binary on debian-slim, no Python, behind an existing Traefik:
+
+```bash
+RACE_HOST=race.example.com docker compose -f docker-compose.game.yml up -d --build
+```
+
+See `.env.example` for the variables. Two flags are load-bearing: `--trust-proxy`
+is required behind a proxy and unsafe without one (a client can otherwise forge
+`X-Forwarded-For` past the rate limiter), and `--state` must point somewhere
+writable that is **not** the data directory, which deployments mount read-only.
+
+Data is mounted, never baked into either image: it is ~1.2 GiB and changes on a
+completely different cadence than the code.
 
 ## Acknowledgments
 
 Inspired by ["I Made a Graph of Wikipedia... This Is What I Found"](https://www.youtube.com/watch?v=JheGL6uSF-4)
-by adumb. This is an independent implementation using Rust, RAPIDS and igraph.
+by adumb (March 2024). That project's source is distributed through
+[GitHub Sponsors](https://github.com/sponsors/adumb-codes/) rather than published,
+and the method is not documented publicly, so nothing here is derived from it.
+
+This is an independent implementation: Rust for parsing and the game, graph-tool
+and igraph for layout and communities, Datashader for rendering.
