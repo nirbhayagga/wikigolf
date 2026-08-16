@@ -384,14 +384,126 @@ impl PathFinder {
         }
         head
     }
+
+    /// How many *distinct shortest* routes run from `start` to `goal`.
+    ///
+    /// Returns `(length, count)`. This is the difficulty signal that path
+    /// length alone cannot give: four clicks with one viable route is a much
+    /// harder puzzle than four clicks with two hundred, and the player feels
+    /// the difference immediately.
+    ///
+    /// Deliberately *not* bidirectional. The bidirectional search stops the
+    /// instant the two frontiers touch, which is what makes it 22 ms — but it
+    /// therefore never sees the rest of the shortest-path DAG, and the count
+    /// lives in exactly that part. So this is a single forward BFS carrying a
+    /// path count alongside the depth, expanding whole levels until the goal's
+    /// level completes. Expect seconds, not milliseconds: it belongs at puzzle
+    /// generation, never in a request handler.
+    ///
+    /// Counts saturate rather than wrap. Between two well-connected articles
+    /// the number of four-click routes runs into the billions, and a silently
+    /// wrapped count is a difficulty score made of noise.
+    pub fn count_shortest_paths(
+        &mut self,
+        g: &Graph,
+        start: u32,
+        goal: u32,
+        banned: &dyn Fn(u32) -> bool,
+        max_depth: u8,
+    ) -> Option<(usize, u64)> {
+        self.reset();
+        if start == goal {
+            return Some((0, 1));
+        }
+        let n = g.len();
+        if start as usize >= n || goal as usize >= n {
+            return None;
+        }
+
+        // sigma[v] = number of shortest routes from `start` to v. Sparse:
+        // only vertices this search touches are ever written, and `touched_f`
+        // already records exactly those for the reset.
+        let mut sigma: Vec<u64> = vec![0; n];
+        sigma[start as usize] = 1;
+        self.dist_f[start as usize] = 0;
+        self.touched_f.push(start);
+
+        let mut frontier = vec![start];
+        let mut depth = 0u8;
+
+        while !frontier.is_empty() && depth < max_depth {
+            depth += 1;
+            let mut next = Vec::new();
+            for &v in &frontier {
+                let sv = sigma[v as usize];
+                for &w in g.forward.neighbors(v) {
+                    if w != goal && banned(w) {
+                        continue;
+                    }
+                    let d = self.dist_f[w as usize];
+                    if d == UNSEEN {
+                        self.dist_f[w as usize] = depth;
+                        self.touched_f.push(w);
+                        sigma[w as usize] = sv;
+                        next.push(w);
+                    } else if d == depth {
+                        // Another route of the same length into w. Reached on
+                        // this level, so it is still a *shortest* route.
+                        sigma[w as usize] = sigma[w as usize].saturating_add(sv);
+                    }
+                }
+            }
+            // Finish the level before deciding: stopping at first sight of the
+            // goal would count only the routes found so far on it.
+            if self.dist_f[goal as usize] == depth {
+                return Some((depth as usize, sigma[goal as usize]));
+            }
+            frontier = next;
+        }
+        None
+    }
+
+    /// Shortest-path distance from every article *to* `goal`, capped at
+    /// `max_depth`. `UNSEEN` means further than the cap, or no route at all.
+    ///
+    /// A BFS from `goal` across reversed edges: a vertex is at distance d if
+    /// it can reach the goal in d clicks. One pass answers "how far is this
+    /// link from the target" for every link the player will ever see in this
+    /// race, so the compass costs one BFS per puzzle rather than one per hint.
+    ///
+    /// The returned vector is `n` bytes — about 7 MB at enwiki scale — so it
+    /// is worth caching per goal and sharing across players on the daily.
+    pub fn distances_to(&mut self, g: &Graph, goal: u32, max_depth: u8) -> Vec<u8> {
+        let n = g.len();
+        let mut dist = vec![UNSEEN; n];
+        if (goal as usize) < n {
+            dist[goal as usize] = 0;
+            let mut frontier = vec![goal];
+            let mut depth = 0u8;
+            while !frontier.is_empty() && depth < max_depth {
+                depth += 1;
+                let mut next = Vec::new();
+                for &v in &frontier {
+                    for &w in g.reverse.neighbors(v) {
+                        if dist[w as usize] == UNSEEN {
+                            dist[w as usize] = depth;
+                            next.push(w);
+                        }
+                    }
+                }
+                frontier = next;
+            }
+        }
+        dist
+    }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests_support {
     use super::*;
 
     /// Build a graph directly from an edge list, bypassing Parquet.
-    fn graph(n: u32, edges: &[(u32, u32)]) -> Graph {
+    pub(crate) fn graph(n: u32, edges: &[(u32, u32)]) -> Graph {
         let mut out_counts = vec![0u32; n as usize];
         let mut in_counts = vec![0u32; n as usize];
         for &(s, d) in edges {
@@ -492,5 +604,84 @@ mod tests {
         // A different query in between must not corrupt the next one.
         pf.shortest_path(&g, 2, 4, &|_| false);
         assert_eq!(pf.shortest_path(&g, 0, 4, &|_| false), first);
+    }
+}
+
+#[cfg(test)]
+mod counting_tests {
+    use super::tests_support::*;
+    use super::*;
+
+    fn count(g: &Graph, s: u32, t: u32) -> Option<(usize, u64)> {
+        PathFinder::new(g.len()).count_shortest_paths(g, s, t, &|_| false, 12)
+    }
+
+    #[test]
+    fn counts_a_diamond() {
+        //   0 -> 1 -> 3
+        //   0 -> 2 -> 3      two shortest routes, both length 2
+        let g = graph(4, &[(0, 1), (0, 2), (1, 3), (2, 3)]);
+        assert_eq!(count(&g, 0, 3), Some((2, 2)));
+    }
+
+    #[test]
+    fn counts_parallel_diamonds_multiplicatively() {
+        // Two diamonds in series: 2 ways through the first times 2 through the
+        // second is 4 distinct shortest routes of length 4.
+        let g = graph(
+            7,
+            &[(0, 1), (0, 2), (1, 3), (2, 3), (3, 4), (3, 5), (4, 6), (5, 6)],
+        );
+        assert_eq!(count(&g, 0, 6), Some((4, 4)));
+    }
+
+    #[test]
+    fn ignores_longer_routes() {
+        // 0->1->4 is the only shortest; 0->2->3->4 is longer and must not be
+        // counted even though it also arrives.
+        let g = graph(5, &[(0, 1), (1, 4), (0, 2), (2, 3), (3, 4)]);
+        assert_eq!(count(&g, 0, 4), Some((2, 1)));
+    }
+
+    #[test]
+    fn unreachable_and_self() {
+        let g = graph(3, &[(0, 1)]);
+        assert_eq!(count(&g, 0, 2), None);
+        assert_eq!(count(&g, 1, 1), Some((0, 1)));
+    }
+
+    #[test]
+    fn respects_the_hub_ban() {
+        // Every route runs through 1; banning it leaves nothing.
+        let g = graph(3, &[(0, 1), (1, 2)]);
+        let mut pf = PathFinder::new(g.len());
+        assert_eq!(pf.count_shortest_paths(&g, 0, 2, &|v| v == 1, 12), None);
+    }
+
+    #[test]
+    fn depth_cap_gives_up_rather_than_lying() {
+        let g = graph(5, &[(0, 1), (1, 2), (2, 3), (3, 4)]);
+        let mut pf = PathFinder::new(g.len());
+        assert_eq!(pf.count_shortest_paths(&g, 0, 4, &|_| false, 2), None);
+        assert_eq!(pf.count_shortest_paths(&g, 0, 4, &|_| false, 4), Some((4, 1)));
+    }
+
+    #[test]
+    fn distances_to_measures_toward_the_goal() {
+        // 0 -> 1 -> 2, and 3 is a dead end that reaches nothing.
+        let g = graph(4, &[(0, 1), (1, 2)]);
+        let d = PathFinder::new(g.len()).distances_to(&g, 2, 6);
+        assert_eq!(d[2], 0, "the goal is zero from itself");
+        assert_eq!(d[1], 1, "one click away");
+        assert_eq!(d[0], 2, "two clicks away");
+        assert_eq!(d[3], UNSEEN, "cannot reach the goal at all");
+    }
+
+    #[test]
+    fn distances_to_honours_the_cap() {
+        let g = graph(4, &[(0, 1), (1, 2), (2, 3)]);
+        let d = PathFinder::new(g.len()).distances_to(&g, 3, 1);
+        assert_eq!(d[2], 1);
+        assert_eq!(d[1], UNSEEN, "past the cap is indistinguishable from absent");
     }
 }
