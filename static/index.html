@@ -366,6 +366,7 @@
     <div class="sheet">
       <div class="verdict" id="verdict"></div>
       <div class="score" id="score"></div>
+      <div class="score" id="routes"></div>
       <div id="squares"></div>
       <div class="row" style="margin-top:14px">
         <input id="nick" placeholder="nickname" maxlength="20" style="flex:1">
@@ -917,6 +918,7 @@ async function finish(won) {
   $('nick').value = localStorage.getItem('wr-nick') || '';
 
   $('routelbl').textContent = 'A shortest route';
+  $('routes').textContent = 'counting routes…';
   $('route').innerHTML = '<div class="empty">finding&hellip;</div>';
   $('note').textContent = state.ban
     ? `Hard mode: routes through articles with more than ${state.ban.toLocaleString()} inbound links were banned for both you and the optimal route.`
@@ -959,6 +961,16 @@ async function finish(won) {
   } else {
     $('fromherebox').style.display = 'none';
   }
+  // How many optimal routes existed. Asked now rather than at generation:
+  // counting is a full BFS, and the player is already finished.
+  try {
+    const r = await api(`/api/routes?run=${state.run}`);
+    const n = r.routes;
+    $('routes').innerHTML = n === 1
+      ? `There was exactly <b>one</b> shortest route.`
+      : `There were <b>${r.saturated ? 'over 18 quintillion' : n.toLocaleString()}</b> `+
+        `different ${r.clicks}-click routes.`;
+  } catch { $('routes').textContent = ''; }
   draw();
 }
 

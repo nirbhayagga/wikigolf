@@ -182,6 +182,7 @@ async fn rate_limit(
             | "/api/daily"
             | "/api/submit"
             | "/api/compass"
+            | "/api/routes"
     );
     let ok = if heavy { app.rl_heavy.allow(ip) } else { app.rl_read.allow(ip) };
     if !ok {
@@ -660,6 +661,58 @@ async fn submit(
     }
 }
 
+/// How many distinct shortest routes the race had.
+///
+/// Deliberately answered *after* the race, not at generation. Counting is a
+/// full forward BFS carrying path counts — seconds, against 41 ms to generate
+/// a puzzle — so putting it in the generation path would make every race slow
+/// to start for a number nobody had looked at yet. Asked once at the end, the
+/// player is already finished and the wait costs nothing.
+///
+/// It is also the better difficulty signal: four clicks with one viable route
+/// is a far harder puzzle than four clicks with two hundred, and length alone
+/// cannot tell those apart.
+async fn route_count(
+    State(s): State<Shared>,
+    Query(q): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let Some(run) = q.get("run").and_then(|v| v.parse::<u64>().ok()) else {
+        return err("run is required").into_response();
+    };
+    let Some((start, goal, ban, par)) = s.runs.terms(run) else {
+        return err("unknown or expired run").into_response();
+    };
+
+    let out = tokio::task::spawn_blocking(move || {
+        let rev = &s.game.graph.reverse;
+        let banned: Box<dyn Fn(u32) -> bool + '_> = match ban {
+            Some(limit) => {
+                Box::new(move |v: u32| v != start && v != goal && rev.degree(v) > limit)
+            }
+            None => Box::new(|_| false),
+        };
+        // +1 on the cap: par came from the same graph, so anything deeper is a
+        // disagreement worth surfacing as "unknown" rather than as a number.
+        s.with_finder(|g, pf| {
+            pf.count_shortest_paths(&g.graph, start, goal, &banned, (par + 1) as u8)
+        })
+    })
+    .await;
+
+    match out {
+        Ok(Some((len, count))) => Json(serde_json::json!({
+            "clicks": len,
+            "routes": count,
+            // Saturating means "at least this many", and presenting a clamped
+            // value as exact would be a lie about a number nobody can check.
+            "saturated": count == u64::MAX,
+        }))
+        .into_response(),
+        Ok(None) => err("no route within par").into_response(),
+        Err(_) => err("counting failed").into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 struct CompassRequest {
     run: u64,
@@ -936,6 +989,7 @@ async fn serve() -> Result<()> {
         .route("/api/submit", post(submit))
         .route("/api/leaderboard", get(leaderboard))
         .route("/api/compass", post(compass))
+        .route("/api/routes", get(route_count))
         // Layers run outermost-last, so rate limiting is checked before we
         // bother minting an identity for a request we are about to refuse.
         .layer(middleware::from_fn_with_state(state.clone(), identify))
