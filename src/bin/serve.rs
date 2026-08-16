@@ -386,6 +386,19 @@ async fn index() -> Html<&'static str> {
     Html(include_str!("../../static/index.html"))
 }
 
+/// Region names, so the link list can group by topic instead of showing a
+/// flat wall of several hundred links. Sent once with the page rather than per
+/// article: there are at most a few hundred and they never change while the
+/// process runs. Empty until 03_name_clusters.py has been run, which the UI
+/// handles by falling back to "Region N".
+async fn regions(State(s): State<Shared>) -> impl IntoResponse {
+    (
+        [(header::CACHE_CONTROL, "public, max-age=86400")],
+        Json(s.game.region_names.clone()),
+    )
+        .into_response()
+}
+
 async fn meta(State(s): State<Shared>) -> Json<Meta> {
     let bounds = s.game.layout.as_ref().map(|l| {
         let fold = |v: &Vec<f32>, init: f32, f: fn(f32, f32) -> f32| {
@@ -891,6 +904,7 @@ async fn serve() -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
         .route("/api/meta", get(meta))
+        .route("/api/regions", get(regions))
         .route("/api/search", get(search))
         .route("/api/article/{id}", get(article))
         .route("/api/path", post(path))
@@ -958,6 +972,9 @@ mod page_tests {
             "$('helpbtn').onclick",
             "$('compass').onclick",
             "function updateCompass",
+            "function linkRow",
+            "$('lgroup').addEventListener",
+            "/api/regions",
             "id=\"fromherebox\"",
             "$('helpclose').onclick",
             "async function loadBoard",

@@ -130,6 +130,10 @@ pub struct Game {
     /// is identical for every visitor and changes only with the dump, so it is
     /// computed here rather than rebuilt on each request.
     map_order: Vec<u32>,
+    /// Community id -> human name, from community_labels.json when the LLM
+    /// naming step has run. Empty otherwise, and the UI falls back to
+    /// "Region N" — a missing label is cosmetic, never fatal.
+    pub region_names: std::collections::HashMap<i32, String>,
 }
 
 /// How deep the hub ranking goes; the slider cannot exclude more than this.
@@ -247,7 +251,18 @@ impl Game {
         }
         map_order.shrink_to_fit();
 
-        Ok(Game { graph, layout, playable, hubs, map_order })
+        // Optional: only exists after 03_name_clusters.py has run.
+        let region_names = std::fs::read_to_string(data_dir.join("community_labels.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<std::collections::HashMap<String, String>>(&t).ok())
+            .map(|m| {
+                m.into_iter()
+                    .filter_map(|(k, v)| k.parse::<i32>().ok().map(|k| (k, v)))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(Game { graph, layout, playable, hubs, map_order, region_names })
     }
 
     /// The in-degree limit that excludes roughly the top `n` articles, with a
