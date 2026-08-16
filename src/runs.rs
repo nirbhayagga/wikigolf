@@ -271,6 +271,16 @@ impl Registry {
         Ok((run.goal, run.ban_degree, run.compass_left))
     }
 
+    /// The terms of a run: `(start, goal, ban_degree, par)`.
+    ///
+    /// Read-only and does not consume anything, unlike spend_compass — this
+    /// answers a question about a race that is already over.
+    pub fn terms(&self, id: u64) -> Option<(u32, u32, Option<usize>, usize)> {
+        let runs = self.runs.lock().unwrap();
+        let r = runs.get(&id)?;
+        Some((r.start, r.goal, r.ban_degree, r.par))
+    }
+
     pub fn submit(
         &self,
         g: &Graph,
