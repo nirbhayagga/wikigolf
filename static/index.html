@@ -129,6 +129,9 @@
   #custom button { width:100%; margin-top:8px; }
   #custom .picked { border-color:var(--to); }
   #cerr { margin-top:6px; min-height:14px; }
+  .tag.near { color:var(--from); font-weight:700; }
+  .tag.far  { color:var(--faint); }
+  #compass:disabled { opacity:.42; }
   .hits .hit { padding:6px 9px; cursor:pointer; border-radius:6px; }
   .hits .hit:hover { background:var(--hover); }
 
@@ -351,6 +354,9 @@
       </div>
       <div class="score" id="posted" style="margin-top:7px"></div>
       <div class="routebox"><div class="lbl" id="routelbl"></div><div id="route"></div></div>
+      <div class="routebox" id="fromherebox" style="display:none">
+        <div class="lbl" id="fromherelbl"></div><div id="fromhere"></div>
+      </div>
       <div class="routebox">
         <div class="lbl">Leaderboard &mdash; <span id="boardname"></span></div>
         <div id="board"></div>
@@ -452,6 +458,7 @@
     <div id="trail"></div>
     <div class="row">
       <button class="ghost" id="back" style="flex:1" disabled>&larr; Back</button>
+      <button class="ghost" id="compass" style="flex:1" disabled>&#129517; Compass</button>
       <button class="ghost" id="pause" style="flex:1" disabled>Pause</button>
       <button class="ghost" id="giveup" style="flex:1" disabled>Give up</button>
     </div>
@@ -474,6 +481,7 @@ const blank = () => ({
   goal:null, cur:null, trail:[], steps:[], par:null, ban:null, run:null,
   done:false, started:null, elapsed:0, number:null, difficulty:'easy', share:'',
   veil:null, pauseAt:0, url:'',
+  compass:0, dist:null,   // charges left, and id -> clicks-to-goal for this article
 });
 let state = blank();
 
@@ -621,6 +629,7 @@ function setVeil(mode) {          // 'ready' | 'paused' | null
   $('veil').style.display = mode ? 'grid' : 'none';
   $('pause').textContent = mode === 'paused' ? 'Resume' : 'Pause';
   $('pause').disabled = !state.goal || state.done || mode === 'ready';
+  updateCompass();
   $('back').disabled = !!mode || state.trail.length < 2;
   $('giveup').disabled = !!mode || !state.goal || state.done;
   // Search and the custom-race pickers stay live under the veil. They were
@@ -698,6 +707,7 @@ async function go(id, isBack) {
   $('back').disabled = !!state.veil || state.trail.length < 2;
   $('giveup').disabled = !!state.veil || !state.goal || state.done;
   $('pause').disabled = !!state.veil || !state.goal || state.done;
+  updateCompass();
 
   if (state.goal && d.id === state.goal.id) return finish(true);
   renderLinks(d);
@@ -713,6 +723,10 @@ let CURLINKS = [];
 
 function renderLinks(d) {
   CURLINKS = d.links;
+  // Readings belong to the article you were standing on. Carrying them
+  // forward would turn one charge into a hint for the whole race.
+  state.dist = null;
+  updateCompass();
   $('lfilter').value = '';
   paintLinks();
 }
@@ -772,6 +786,10 @@ function paintLinks() {
       `<span class="dot" style="background:${l.banned?'var(--locked)':colorOf(l.community)}"></span>`+
       `<span class="name">${esc(l.title)}</span>`+
       (l.banned ? `<span class="tag lock">&#128274; hub</span>` : '')+
+      (state.dist && state.dist[l.id] !== undefined
+        ? `<span class="tag ${state.dist[l.id] <= 1 ? 'near' : 'far'}">`+
+          (state.dist[l.id] === null ? '&gt;6' : `${state.dist[l.id]} to go`)+
+          `</span>` : '')+
       `<span class="tag">${l.in_degree.toLocaleString()}</span>`;
     if (!l.banned) el.onclick = () => go(l.id);
     frag.appendChild(el);
@@ -793,6 +811,7 @@ async function finish(won) {
   setVeil(null);
   $('giveup').disabled = true;
   $('pause').disabled = true;
+  updateCompass();
   const clicks = state.trail.length-1, par = state.par;
 
   $('verdict').textContent = !won ? 'Gave up'
@@ -823,10 +842,12 @@ async function finish(won) {
     : '';
   $('result').style.display='grid';
 
+  const ask = (from) => api('/api/path', { method:'POST',
+    headers:{'content-type':'application/json'},
+    body: JSON.stringify({ from, to: state.goal.id, ban_degree: state.ban }) });
+
   try {
-    const p = await api('/api/path', { method:'POST',
-      headers:{'content-type':'application/json'},
-      body: JSON.stringify({ from: state.trail[0].id, to: state.goal.id, ban_degree: state.ban }) });
+    const p = await ask(state.trail[0].id);
     if (p.found) {
       // "A" shortest route, not "the": ties are common in a graph this dense
       // and we return whichever the bidirectional search met on.
@@ -834,6 +855,29 @@ async function finish(won) {
       $('routelbl').textContent = `A shortest route (${p.clicks} clicks)`;
     } else $('route').innerHTML = '<div class="empty">no route exists</div>';
   } catch { $('route').innerHTML=''; }
+
+  // On a give-up, the route from the start is the least interesting answer —
+  // you want to know what you should have done from where you actually got to.
+  // Skipped when you never moved, since it would just repeat the block above.
+  const here = state.trail[state.trail.length-1];
+  if (!won && here && here.id !== state.trail[0].id) {
+    $('fromherebox').style.display = '';
+    $('fromherelbl').textContent = `From ${here.title}`;
+    $('fromhere').innerHTML = '<div class="empty">finding&hellip;</div>';
+    try {
+      const q = await ask(here.id);
+      $('fromherelbl').textContent = q.found
+        ? `From ${here.title} it was ${q.clicks} more click${q.clicks===1?'':'s'}`
+        : `From ${here.title} there was no way through`;
+      $('fromhere').innerHTML = q.found
+        ? routeHtml(q.path, [])
+        : `<div class="empty">Nothing links onward to the goal from here` +
+          (state.ban ? ` at this hub level.` : `.`) +
+          ` Backing up was the only move.</div>`;
+    } catch { $('fromhere').innerHTML = '<div class="empty">could not check</div>'; }
+  } else {
+    $('fromherebox').style.display = 'none';
+  }
   draw();
 }
 
@@ -872,7 +916,7 @@ async function startRace(endpoint, extra) {
     const p = await api(`${endpoint}?${q}`);
     state = blank();
     Object.assign(state, { goal:p.goal, par:p.optimal, ban:p.ban_degree, run:p.run,
-      number:p.number??null, difficulty:p.difficulty||diff });
+      number:p.number??null, difficulty:p.difficulty||diff, compass:p.compass??0 });
     $('goal').textContent = p.goal.title;
     $('goalmeta').textContent = `${p.goal.in_degree.toLocaleString()} inbound links`;
     $('par').textContent = p.optimal;
@@ -937,6 +981,44 @@ $('helpclose').onclick = () => {
   // mind before closing does what it looks like it does.
   localStorage.setItem('wr-help', $('hnever').checked ? 'off' : 'on');
   showHelp(false);
+};
+
+/* ---------------- compass ----------------
+   The honest replacement for the map-distance arrows. Those compared
+   straight-line positions and scored a 1.18x lift over guessing; these are the
+   real shortest-path distance, computed by a reverse BFS from the goal.
+
+   Rationed because they are exact: shown on every article for free you would
+   simply click the smallest number each turn. Charges scale with par — one on
+   a three-click race, four on a six — so you can always check about half your
+   moves and never all of them. The server owns the count; the client is only
+   allowed to display it. */
+function updateCompass() {
+  const b = $('compass');
+  const live = state.goal && !state.done && !state.veil;
+  b.disabled = !live || state.compass <= 0 || !!state.dist;
+  b.textContent = state.dist ? '\u{1F9ED} reading'
+    : `\u{1F9ED} Compass${state.compass ? ' \u00d7' + state.compass : ''}`;
+}
+
+$('compass').onclick = async () => {
+  if (!state.goal || state.done || state.veil || state.compass <= 0 || state.dist) return;
+  $('compass').disabled = true;
+  try {
+    const r = await api('/api/compass', { method:'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify({ run: state.run, from: state.cur.id }) });
+    state.compass = r.charges_left;
+    state.dist = {};
+    for (const l of r.links) state.dist[l.id] = l.dist;
+    paintLinks();
+  } catch (e) {
+    // A charge is spent server-side before the search runs, so a failure here
+    // has still cost one. Saying so beats silently looking broken.
+    $('links').insertAdjacentHTML('afterbegin',
+      `<div class="empty">${esc(e.message || 'compass failed')}</div>`);
+  }
+  updateCompass();
 };
 
 /* ---------------- shareable races ----------------

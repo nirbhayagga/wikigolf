@@ -78,7 +78,18 @@ struct App {
     trust_proxy: bool,
     identity: Identity,
     secure_cookies: bool,
+    /// Distance-to-goal maps, keyed by goal. One is ~7 MB at enwiki scale and
+    /// costs a full reverse BFS, so they are kept rather than recomputed —
+    /// and everyone racing the daily shares a single entry.
+    compass: Mutex<Vec<(u32, Arc<Vec<u8>>)>>,
 }
+
+/// How many goal maps to keep. Each is one byte per article, so this bounds
+/// the cache at roughly 8 x 7 MB.
+const COMPASS_CACHE: usize = 8;
+/// Nothing in this game is a sensible race at more than a handful of clicks,
+/// and the cap is what stops a BFS from walking the entire graph.
+const COMPASS_DEPTH: u8 = 6;
 
 /// The player id resolved from a request's cookie, attached by middleware.
 #[derive(Clone)]
@@ -165,7 +176,12 @@ async fn rate_limit(
     let ip = client_ip(&app, &req, peer.ip());
     let heavy = matches!(
         path.as_str(),
-        "/api/search" | "/api/path" | "/api/puzzle" | "/api/daily" | "/api/submit"
+        "/api/search"
+            | "/api/path"
+            | "/api/puzzle"
+            | "/api/daily"
+            | "/api/submit"
+            | "/api/compass"
     );
     let ok = if heavy { app.rl_heavy.allow(ip) } else { app.rl_read.allow(ip) };
     if !ok {
@@ -253,6 +269,8 @@ struct PathResponse {
 
 #[derive(Serialize)]
 struct PuzzleResponse {
+    /// Compass charges this race gets, scaled to its par.
+    compass: u8,
     start: ArticleRef,
     goal: ArticleRef,
     optimal: usize,
@@ -570,6 +588,7 @@ fn issue(
         number,
     });
     PuzzleResponse {
+        compass: wiki_parser::runs::compass_charges(p.optimal),
         start: article_ref(&s.game, p.start),
         goal: article_ref(&s.game, p.goal),
         optimal: p.optimal,
@@ -605,6 +624,81 @@ async fn submit(
         // check failed — useful for honest clients, useless to a forger.
         Ok(Err(msg)) => err(msg).into_response(),
         Err(_) => err("submission failed").into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct CompassRequest {
+    run: u64,
+    /// The article the player is standing on. Only its links are measured —
+    /// handing back the whole distance map would let a client spend one charge
+    /// and keep the answer for the rest of the race.
+    from: u32,
+}
+
+/// Exact distance from each of `from`'s links to the goal.
+///
+/// This replaces the map-distance arrows, which were measured at a 1.18x lift
+/// over guessing. These numbers are the real graph distance, which is why they
+/// are rationed: shown for free on every article they would solve the game.
+async fn compass(
+    State(s): State<Shared>,
+    Json(req): Json<CompassRequest>,
+) -> impl IntoResponse {
+    let (goal, ban, left) = match s.runs.spend_compass(req.run) {
+        Ok(v) => v,
+        Err(e) => return err(&e.message(&s.game.graph)).into_response(),
+    };
+
+    let out = tokio::task::spawn_blocking(move || {
+        let cached = {
+            let cache = s.compass.lock().unwrap();
+            cache.iter().find(|(g, _)| *g == goal).map(|(_, d)| Arc::clone(d))
+        };
+        let dist = match cached {
+            Some(d) => d,
+            None => {
+                let d = Arc::new(
+                    s.with_finder(|g, pf| pf.distances_to(&g.graph, goal, COMPASS_DEPTH)),
+                );
+                let mut cache = s.compass.lock().unwrap();
+                if !cache.iter().any(|(g, _)| *g == goal) {
+                    cache.push((goal, Arc::clone(&d)));
+                    if cache.len() > COMPASS_CACHE {
+                        cache.remove(0);
+                    }
+                }
+                d
+            }
+        };
+
+        let rev = &s.game.graph.reverse;
+        let links: Vec<serde_json::Value> = s
+            .game
+            .graph
+            .forward
+            .neighbors(req.from)
+            .iter()
+            .map(|&w| {
+                let d = dist[w as usize];
+                serde_json::json!({
+                    "id": w,
+                    // null rather than a number when the goal is further than
+                    // the cap or unreachable: "I do not know" is honest, and a
+                    // large sentinel would read as a real distance.
+                    "dist": if d == u8::MAX { serde_json::Value::Null }
+                            else { serde_json::json!(d) },
+                    "banned": ban.is_some_and(|l| rev.degree(w) > l && w != goal),
+                })
+            })
+            .collect();
+        serde_json::json!({ "charges_left": left, "links": links })
+    })
+    .await;
+
+    match out {
+        Ok(v) => Json(v).into_response(),
+        Err(_) => err("compass failed").into_response(),
     }
 }
 
@@ -768,6 +862,7 @@ async fn main() -> Result<()> {
         trust_proxy: args.trust_proxy,
         identity: Identity::load_or_create(&state_dir)?,
         secure_cookies: args.secure_cookies,
+        compass: Mutex::new(Vec::new()),
     });
 
     let app = Router::new()
@@ -783,6 +878,7 @@ async fn main() -> Result<()> {
         .route("/api/hubs", get(hubs))
         .route("/api/submit", post(submit))
         .route("/api/leaderboard", get(leaderboard))
+        .route("/api/compass", post(compass))
         // Layers run outermost-last, so rate limiting is checked before we
         // bother minting an identity for a request we are about to refuse.
         .layer(middleware::from_fn_with_state(state.clone(), identify))
@@ -837,6 +933,9 @@ mod page_tests {
             "function readTheme",
             "$('theme').addEventListener",
             "$('helpbtn').onclick",
+            "$('compass').onclick",
+            "function updateCompass",
+            "id=\"fromherebox\"",
             "$('helpclose').onclick",
             "async function loadBoard",
             "$('post').onclick",
