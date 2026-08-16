@@ -36,6 +36,9 @@ cufile.log
 # and root-scoped so python/requirements.txt is not caught by it.
 /20??-??-??-*.txt
 !CLAUDE.md
+# Hand-written reference, same standing as README and CLAUDE. The *.md rule
+# above exists for generated audits, not for docs that are part of the project.
+!CODEBASE.md
 
 # Per-host compose overrides. Editing the tracked compose on a server means
 # every `git pull` conflicts; put deployment-specific deviations here instead
