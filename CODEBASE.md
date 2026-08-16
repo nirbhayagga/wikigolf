@@ -169,6 +169,25 @@ mount that read-only and the process dies at startup otherwise.
 
 ---
 
+## Deployment files
+
+| File | What it deploys |
+|---|---|
+| `Dockerfile` + `docker-compose.yml` | The Python Panel/Datashader viewer. Visualization dependencies only. |
+| `Dockerfile.game` | The Rust binary on debian-slim. Multi-stage; `static/` is a **build** dependency because the page is embedded with `include_str!`. |
+| `docker-compose.game.yml` | The game behind an existing Traefik. Joins an external network, carries routing labels, publishes only on loopback. |
+| `docker-compose.game.direct.yml` | The game on a host port, no proxy. A separate complete file, not an override — Compose appends sequences, so an override adding a port gives two mappings and a conflict, and a service's network list cannot be subtracted from. |
+| `compose.local.yml` | Gitignored per-host overrides, so the tracked files never need editing on a server. |
+| `.env.example` | Every variable, with the real values discovered on the LAN Traefik (`https`, not `websecure`). |
+
+Both game compose files accept `IMAGE=` to run a prebuilt image instead of
+compiling on the server. The binary is 12.5 MB and links only libc, libm and
+libgcc, so there is nothing to gain from building where it runs — and building
+there costs 2–3 GB of RAM plus a ~1.5 GB toolchain image, which is most of the
+headroom on a 6 GB box.
+
+---
+
 ## Measured numbers
 
 | | |
