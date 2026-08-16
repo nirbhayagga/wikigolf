@@ -89,6 +89,7 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 | `07_incremental.py` | 92 | either | Cache status and reset. |
 | `08_export_gephi.py` | 82 | laptop | Exports the high-PageRank core as Gephi CSVs for the LinLog test. |
 | `09_pageviews.py` | 143 | laptop | Joins Wikimedia monthly pageviews onto article ids. |
+| `diag_gpu.py` | 146 | PC | Bisects the cuGraph ForceAtlas2 segfault. Kept as a record; FA2 is dead. |
 
 ### Endpoints the game serves
 
@@ -105,7 +106,6 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 | `/api/compass` | 1.4 s first per goal | Then cached; charges scale with par. |
 | `/api/routes` | 31–142 ms | Shortest-route count, asked after the race. |
 | `/api/submit` · `/api/leaderboard` | — | Re-walks the submitted path; never trusts a score. |
-| `diag_gpu.py` | 146 | PC | Bisects the cuGraph ForceAtlas2 segfault. Kept as a record; FA2 is dead. |
 
 ### Load-bearing details
 
