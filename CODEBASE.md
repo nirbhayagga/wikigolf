@@ -1,7 +1,7 @@
 # wiki-graph codebase
 
-Every file, what it does, and what it produces. Written 16 August 2026 against
-commit `e3097a4`.
+Every file, what it does, and what it produces. Written 16 August 2026, last
+swept 17 August 2026.
 
 Two independent programs share one data format:
 
@@ -97,9 +97,9 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 
 | Route | Cost | Notes |
 |---|---|---|
-| `/api/meta` | 17 ms | Article and edge counts, map bounds, whether pools are loaded. |
+| `/api/meta` | 17 ms | Article and edge counts, map bounds, whether pools and pageviews are loaded. |
 | `/api/regions` | free | Region names, from categories or the LLM file. |
-| `/api/map` | 15 ms | 45k points, 1.72 MB, ETag so repeats are free. |
+| `/api/map` | 15 ms | 45k points, 1.72 MB (~a third gzipped), ETag so repeats are free. |
 | `/api/article/{id}` | 3.7 ms | Links with their categories, plus aliases and byte size. |
 | `/api/search` | sub-ms typical | Prebuilt index over titles AND redirect aliases ("NYC" finds New York City), deduped to the best entry per article. Worst case (no match) is still a full pass, but allocation-free. |
 | `/api/path` | 22 ms | Bidirectional BFS. |
@@ -168,6 +168,7 @@ ids are stable across re-parses of the same dump.*
 |---|---|
 | `leaderboard.jsonl` | Append-only accepted runs. |
 | `.wiki-race-secret` | HMAC key behind the identity cookie. Losing it logs every player out permanently. |
+| `analytics.jsonl` | One JSON delta line per hour: per-endpoint counters plus hashed-IP daily uniques. Capacity planning, not accounting — losable. |
 
 Both live in `--state`, which **must not** be the data directory — deployments
 mount that read-only and the process dies at startup otherwise.

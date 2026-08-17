@@ -119,12 +119,21 @@ def main():
 
     views = np.zeros(len(titles), dtype=np.int64)
     seen = matched = 0
+    in_en = False
     with bz2.open(src, "rt", encoding="utf-8", errors="replace") as f:
         for line in f:
             # domain title views agent_breakdown
             parts = line.split(" ")
             if len(parts) < 3 or parts[0] != "en.wikipedia":
+                # The dump is sorted by wiki, so once the en.wikipedia block
+                # has been seen and left, everything after it is other
+                # projects — stopping here skips the majority of a 5+ GB
+                # file instead of silently scanning it for zero matches.
+                if in_en:
+                    print("  past the en.wikipedia block — stopping early")
+                    break
                 continue
+            in_en = True
             seen += 1
             n = normalize(parts[1])
             if n is None:
