@@ -690,7 +690,7 @@ async fn puzzle(
     let (from_t, to_t) = (by_title("from_title"), by_title("to_title"));
     for r in [&from_t, &to_t] {
         if let Some(Err(name)) = r {
-            return err(&format!("no article called \"{name}\"")).into_response();
+            return err(format!("no article called \"{name}\"")).into_response();
         }
     }
     let from = from_t
@@ -911,7 +911,7 @@ async fn compass(
 ) -> impl IntoResponse {
     let (goal, ban, left) = match s.runs.spend_compass(req.run) {
         Ok(v) => v,
-        Err(e) => return err(&e.message(&s.game.graph)).into_response(),
+        Err(e) => return err(e.message(&s.game.graph)).into_response(),
     };
 
     let out = tokio::task::spawn_blocking(move || {

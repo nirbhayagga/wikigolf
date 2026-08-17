@@ -352,7 +352,7 @@ impl PathFinder {
                         self.touched_f.push(w);
                         if self.dist_b[w as usize] != UNSEEN {
                             let total = depth_f as u32 + self.dist_b[w as usize] as u32;
-                            if best.map_or(true, |(t, _)| total < t) {
+                            if best.is_none_or(|(t, _)| total < t) {
                                 best = Some((total, w));
                             }
                         }
@@ -375,7 +375,7 @@ impl PathFinder {
                         self.touched_b.push(w);
                         if self.dist_f[w as usize] != UNSEEN {
                             let total = self.dist_f[w as usize] as u32 + depth_b as u32;
-                            if best.map_or(true, |(t, _)| total < t) {
+                            if best.is_none_or(|(t, _)| total < t) {
                                 best = Some((total, w));
                             }
                         }
@@ -768,7 +768,7 @@ mod counting_tests {
     /// graphs from a fixed LCG so a failure reproduces.
     #[test]
     fn bidirectional_count_matches_the_oracle() {
-        let mut seed = 0x1234_5678_9ABC_DEFu64;
+        let mut seed = 0x0123_4567_89AB_CDEFu64;
         let mut rand = move || {
             seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             (seed >> 33) as u32

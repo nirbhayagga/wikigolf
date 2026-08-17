@@ -58,7 +58,7 @@ pub fn extract(text: &str, title: &str) -> Extras {
         // index at 64 once panicked 53 minutes into enwiki when an en-dash
         // straddled exactly that byte — `find` returns char boundaries,
         // arbitrary clamps do not.
-        let name_end = match rest.find(|c| c == '|' || c == '}') {
+        let name_end = match rest.find(['|', '}']) {
             Some(e) if e > 0 && e <= 64 => e,
             _ => continue,
         };

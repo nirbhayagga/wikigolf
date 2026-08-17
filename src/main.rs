@@ -128,7 +128,29 @@ fn main() -> Result<()> {
     let decompressor = pick_decompressor(&args.decompressor)?;
     let started = std::time::Instant::now();
 
-    eprintln!("wiki-parser {}", env!("CARGO_PKG_VERSION"));
+    // A multi-hour run read hours later needs a clock on everything that
+    // matters: when it started, and — via the panic hook — when it died.
+    // "Panicked 53 minutes in" and "panicked at the end" are different bugs,
+    // and without a timestamp the terminal cannot tell you which you had.
+    let wall = || {
+        let s = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        format!("{:02}:{:02}:{:02} UTC", s / 3600 % 24, s / 60 % 60, s % 60)
+    };
+    eprintln!("wiki-parser {}   started {}", env!("CARGO_PKG_VERSION"), wall());
+    {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            eprintln!(
+                "\n⚠ panicked after {:.1?}, at {}",
+                started.elapsed(),
+                wall()
+            );
+            default_hook(info);
+        }));
+    }
     eprintln!("   dump:      {}", args.dump.display());
     eprintln!("   out:       {}", args.out.display());
     eprintln!(

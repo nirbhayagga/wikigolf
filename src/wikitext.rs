@@ -156,7 +156,7 @@ fn find_ci(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
             && hay[i..i + needle.len()]
                 .iter()
                 .zip(needle)
-                .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
+                .all(|(a, b)| a.eq_ignore_ascii_case(b))
         {
             return Some(i);
         }
