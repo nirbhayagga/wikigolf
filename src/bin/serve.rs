@@ -991,11 +991,21 @@ async fn daily(
     let name = q.get("difficulty").cloned().unwrap_or_else(|| "medium".into());
     let d = Difficulty::parse(&name);
 
-    let day = SystemTime::now()
+    let today_day = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|t| t.as_secs() / 86_400)
         .unwrap_or(DAILY_EPOCH_DAY);
-    let number = day.saturating_sub(DAILY_EPOCH_DAY) + 1;
+    let today_number = today_day.saturating_sub(DAILY_EPOCH_DAY) + 1;
+
+    // The archive: any past daily by number. The seed is a pure function of
+    // the day, so old dailies replay exactly. Future numbers stay sealed —
+    // tomorrow's puzzle is tomorrow's.
+    let number = match q.get("number").and_then(|v| v.parse::<u64>().ok()) {
+        None => today_number,
+        Some(n) if n >= 1 && n <= today_number => n,
+        Some(_) => return err("that daily does not exist yet").into_response(),
+    };
+    let day = DAILY_EPOCH_DAY + number - 1;
 
     // Mix the difficulty into the seed so each difficulty has its own daily
     // rather than three names for one race.
@@ -1014,6 +1024,25 @@ async fn daily(
         Ok(None) => err("could not generate today's puzzle").into_response(),
         Err(_) => err("daily generation failed").into_response(),
     }
+}
+
+/// Histogram of posted scores for one daily board — the "38% made par"
+/// line. Submissions only, so it is the same opt-in sample Wordle's stats
+/// were; the client, which knows par, does the relative math.
+async fn dist(
+    State(s): State<Shared>,
+    Query(q): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let Some(number) = q.get("number").and_then(|v| v.parse::<u64>().ok()) else {
+        return err("number is required").into_response();
+    };
+    let difficulty = q.get("difficulty").cloned().unwrap_or_else(|| "medium".into());
+    let entries = s.runs.leaderboard(Some(number), &difficulty);
+    let mut hist: std::collections::BTreeMap<usize, usize> = Default::default();
+    for e in &entries {
+        *hist.entry(e.clicks).or_default() += 1;
+    }
+    Json(serde_json::json!({ "total": entries.len(), "hist": hist })).into_response()
 }
 
 async fn map_points(
@@ -1210,6 +1239,7 @@ async fn serve() -> Result<()> {
         .route("/api/hubs", get(hubs))
         .route("/api/submit", post(submit))
         .route("/api/leaderboard", get(leaderboard))
+        .route("/api/dist", get(dist))
         .route("/api/compass", post(compass))
         .route("/api/routes", get(route_count))
         // Layers run outermost-last, so rate limiting is checked before we
@@ -1315,6 +1345,10 @@ mod page_tests {
             "$('replay').onclick",
             "$('tgo').onclick",
             "$('ldetails').addEventListener",
+            "$('dnum')",
+            "function startCountdown",
+            "async function showDist",
+            "/api/dist",
             "function reissueRun",
             "async function apiRun",
             "wr-streak",
