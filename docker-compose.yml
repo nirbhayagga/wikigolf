@@ -1,26 +1,57 @@
+# The map viewer (Panel/Datashader, Python) behind Traefik.
+#
+# Same conventions as docker-compose.game.yml: env-driven, joins the network
+# Traefik already watches, nothing edited on servers. The two files have
+# disjoint services, so Compose merges them cleanly — run the game and the
+# viewer together with:
+#
+#   docker compose -f docker-compose.game.yml -f docker-compose.yml up -d
+#
+# RAM warning for the combined setup: the game holds ~7.1 GB and the viewer
+# needs several GB of its own for datashader aggregations. On a 15 GB VM
+# that fits with little to spare; on anything smaller, run one or the other.
+#
+# Environment (.env next to this file):
+#   VIEW_HOST         required — the hostname Traefik should route
+#   TRAEFIK_NETWORK   the external network Traefik watches (default: traefik)
+#   ENTRYPOINT        Traefik's https entrypoint name    (default: websecure)
+#   DATA_DIR          where the parquet lives            (default: ./data)
+#   CERT_RESOLVER     public deploys only — see the certresolver label
+
 services:
-  wiki-graph:
+  viewer:
     build: .
-    container_name: wiki-graph
     restart: unless-stopped
-    ports:
-      - "5006:5006"
     volumes:
-      - ./data:/app/data:ro
+      - ${DATA_DIR:-./data}:/app/data:ro
     environment:
       # Restrict the websocket handshake to the host you actually serve from.
-      - WEBSOCKET_ORIGIN=${WEBSOCKET_ORIGIN:-*}
+      - WEBSOCKET_ORIGIN=${VIEW_HOST:-*}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5006/')"]
       interval: 30s
       timeout: 5s
-      start_period: 15s
+      # Loading 7.2M nodes into pandas takes a while on first hit.
+      start_period: 120s
       retries: 3
+    networks:
+      - proxy
     labels:
-      # Traefik v3 reverse proxy labels
-      - "traefik.enable=true"
-      - "traefik.http.routers.wiki-graph.rule=Host(`wiki.${DOMAIN:-localhost}`)"
-      - "traefik.http.routers.wiki-graph.entrypoints=websecure"
-      - "traefik.http.routers.wiki-graph.tls.certresolver=letsencrypt"
-      - "traefik.http.services.wiki-graph.loadbalancer.server.port=5006"
+      - traefik.enable=true
+      - traefik.http.routers.wikimap.rule=Host(`${VIEW_HOST}`)
+      - traefik.http.routers.wikimap.entrypoints=${ENTRYPOINT:-websecure}
+      # tls=true with no certresolver serves the wildcard Traefik already
+      # holds; uncomment the resolver line for a public deploy.
+      - traefik.http.routers.wikimap.tls=true
+      # - traefik.http.routers.wikimap.tls.certresolver=${CERT_RESOLVER:-le}
+      - traefik.http.services.wikimap.loadbalancer.server.port=5006
+      - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
+    deploy:
+      resources:
+        limits:
+          memory: 5g
 
+networks:
+  proxy:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}

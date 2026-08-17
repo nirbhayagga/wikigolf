@@ -60,9 +60,10 @@ cargo build --release --bin serve
 cargo build --release --bin pools
 ./target/release/pools --data data
 
-docker-compose up -d    # viewer only, on :5006
 docker compose -f docker-compose.game.yml up -d         # game behind Traefik (.env: RACE_HOST etc.)
 docker compose -f docker-compose.game.direct.yml up -d  # game on a bare host port
+docker compose -f docker-compose.yml up -d              # map viewer behind Traefik (VIEW_HOST)
+docker compose -f docker-compose.game.yml -f docker-compose.yml up -d  # game + viewer together
 ```
 
 The Rust parser has unit + fixture tests (`cargo test`). The Python pipeline has none; validate it against **Simple English Wikipedia** (~339 MB dump, 284k articles), which runs end-to-end on a laptop in ~85 s. Prefer that over `--sample 0.01`, which shatters the graph into disconnected fragments and so cannot validate layout or community quality.
@@ -74,7 +75,7 @@ The Rust parser has unit + fixture tests (`cargo test`). The Python pipeline has
 | Output | Contents |
 |---|---|
 | `titles.parquet` | `id` (dense 0..N-1), `title` — real articles only |
-| `redirects.parquet` | `alias`, `article_id` — for search-by-alias later |
+| `redirects.parquet` | `alias`, `article_id` — feeds alias display and search-by-alias ("NYC" finds New York City) |
 | `edges.parquet` | `src`, `dst` int32, deduped, no self-loops |
 | `categories.parquet` | `article_id`, `category` — from raw text (cleaned text truncates at citation sections), maintenance cats filtered |
 | `article_sizes.parquet` | `id`, `bytes` — raw wikitext length per article |

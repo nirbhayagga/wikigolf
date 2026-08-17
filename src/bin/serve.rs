@@ -29,7 +29,7 @@ use wiki_parser::ratelimit::RateLimiter;
 use wiki_parser::runs::{Registry, RunSpec};
 
 #[derive(Parser, Debug)]
-#[command(name = "serve", about = "Wiki-race HTTP service")]
+#[command(name = "serve", about = "WikiGolf HTTP service")]
 struct Args {
     /// Directory holding titles.parquet / edges.parquet (and optionally nodes.parquet)
     #[arg(short, long, default_value = "data")]
@@ -319,6 +319,10 @@ struct ArticleRef {
     /// does. Empty for a parse that predates category extraction.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     cats: Vec<String>,
+    /// Monthly pageviews — what people read, where in_degree is what editors
+    /// link. Absent until 09_pageviews.py has produced pageviews.parquet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    views: Option<u32>,
 }
 
 fn article_ref(g: &Game, id: u32) -> ArticleRef {
@@ -339,6 +343,7 @@ fn article_ref_banned(g: &Game, id: u32, banned: bool) -> ArticleRef {
         community,
         in_degree: g.graph.reverse.degree(id),
         banned,
+        views: g.views.get(id as usize).copied(),
     }
 }
 
@@ -351,6 +356,8 @@ struct Meta {
     /// rather than rejection sampling — i.e. whether par-5+ races and the
     /// route-count difficulty split are available.
     pools: bool,
+    /// Whether monthly pageview counts are loaded (pageviews.parquet).
+    views: bool,
     bounds: Option<[f32; 4]>,
 }
 
@@ -532,6 +539,7 @@ async fn meta(State(s): State<Shared>) -> Json<Meta> {
         edges: s.game.graph.forward.edges(),
         has_map: s.game.layout.is_some(),
         pools: s.game.has_pools(),
+        views: !s.game.views.is_empty(),
         bounds,
     })
 }
@@ -1163,7 +1171,7 @@ async fn serve() -> Result<()> {
 
     let addr = format!("{}:{}", args.host, args.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    eprintln!("\n  wiki-race listening on http://{addr}");
+    eprintln!("\n  WikiGolf listening on http://{addr}");
     eprintln!(
         "  rate limits: {} reads/s, {} heavy/s per IP{}\n",
         READ_PER_SEC, HEAVY_PER_SEC,

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Wiki Race</title>
+<title>WikiGolf</title>
 <style>
   /* Themes.
      Every colour the page uses — including the ones the canvas paints — comes
@@ -122,6 +122,8 @@
   .brand { display:flex; align-items:baseline; gap:9px; margin-bottom:12px; }
   .brand h1 { margin:0; font-size:15px; letter-spacing:2.2px; font-weight:700; }
   .brand span { color:var(--faint); font-size:11px; font-family:var(--mono); }
+  .credits { margin-top:8px; font-size:10px; color:var(--faint); text-align:center; }
+  .credits a { color:var(--faint); }
   .row { display:flex; gap:7px; }
   select,button,input {
     font:inherit; color:var(--text); background:var(--card);
@@ -410,7 +412,7 @@
 <aside>
   <header>
     <div class="brand">
-      <h1>WIKI RACE</h1><span id="pnum"></span>
+      <h1>WIKIGOLF</h1><span class="lbl2" style="letter-spacing:0">golf across Wikipedia</span><span id="pnum"></span>
       <span style="flex:1"></span>
       <select id="theme" title="Theme" aria-label="Theme">
         <option value="midnight">Midnight</option>
@@ -483,6 +485,7 @@
       </label>
       <select id="lsort" title="Sort links">
         <option value="deg">Most linked</option>
+        <option value="read">Most read</option>
         <option value="asc">Least linked</option>
         <option value="az">A &rarr; Z</option>
         <option value="za">Z &rarr; A</option>
@@ -507,6 +510,11 @@
       <button class="ghost" id="pause" style="flex:1" disabled>Pause</button>
       <button class="ghost" id="giveup" style="flex:1" disabled>Give up</button>
     </div>
+    <!-- Data attribution is not optional: titles and links derive from
+         English Wikipedia, which is CC BY-SA. The author credit is a handle
+         on purpose — no email on a public page. -->
+    <div class="credits">WikiGolf &middot; made by nirb &middot; data from
+      <a href="https://en.wikipedia.org" target="_blank" rel="noopener">English Wikipedia</a> (CC&nbsp;BY-SA&nbsp;4.0)</div>
   </footer>
 </aside>
 
@@ -531,6 +539,9 @@ const blank = () => ({
   group:true,
 });
 let state = blank();
+
+const fmtViews = v => v >= 1e6 ? (v/1e6).toFixed(1)+'M'
+  : v >= 1e3 ? Math.round(v/1e3)+'k' : String(v);
 
 async function api(p, o) {
   const r = await fetch(p, o);
@@ -806,7 +817,9 @@ async function go(id, isBack) {
     `${d.links.length.toLocaleString()} links out · ${d.in_degree.toLocaleString()} in` +
     // Article size: a stub and a 600 KB monster are very different places to
     // be standing, and the dump gives the number away for free.
-    (d.bytes ? ` · ${d.bytes >= 1024 ? Math.round(d.bytes/1024)+' KB' : d.bytes+' B'}` : '');
+    (d.bytes ? ` · ${d.bytes >= 1024 ? Math.round(d.bytes/1024)+' KB' : d.bytes+' B'}` : '') +
+    // What people actually read — the fame signal players recognise.
+    (d.views ? ` · ${fmtViews(d.views)} reads/mo` : '');
   $('curcats').textContent = (d.cats || []).join(' · ');
   $('curalias').textContent = (d.aliases || []).length
     ? 'also: ' + d.aliases.join(', ') : '';
@@ -865,6 +878,10 @@ function paintLinks() {
     if (mode === 'az')  return a.title.localeCompare(b.title);
     if (mode === 'za')  return b.title.localeCompare(a.title);
     if (mode === 'asc') return a.in_degree-b.in_degree;
+    // Missing views (no pageviews.parquet yet) sort as zero, which makes
+    // this order identical-looking to a broken one — hence the meta flag
+    // could gate the option, but a harmless no-op beats a hidden control.
+    if (mode === 'read') return (b.views||0)-(a.views||0);
     return b.in_degree-a.in_degree;
   });
 
@@ -998,7 +1015,7 @@ async function finish(won) {
   // Green while inside par, red for every click past it.
   const sq = state.steps.map(s => s?'🟩':'🟥');
   $('squares').textContent = won ? sq.join('') : '';
-  state.share = (state.number?`Wiki Race #${state.number}`:'Wiki Race')+
+  state.share = (state.number?`WikiGolf #${state.number}`:'WikiGolf')+
     ` (${state.difficulty})`+(streak>1?` · 🔥${streak}-day streak`:'')+`\n`+
     (won ? `${clicks} clicks · par ${par} · ${mmss(state.elapsed)}\n${sq.join('')}` : `gave up · par ${par}`)+
     (state.url ? `\n${state.url}` : '');
@@ -1110,7 +1127,8 @@ async function startRace(endpoint, extra) {
       startId:p.start.id,
       number:p.number??null, difficulty:p.difficulty||diff, compass:p.compass??0 });
     $('goal').textContent = p.goal.title;
-    $('goalmeta').textContent = `${p.goal.in_degree.toLocaleString()} inbound links`;
+    $('goalmeta').textContent = `${p.goal.in_degree.toLocaleString()} inbound links`
+      + (p.goal.views ? ` · ${fmtViews(p.goal.views)} reads/mo` : '');
     $('par').textContent = p.optimal;
     $('time').textContent = '0:00';
     $('pnum').textContent = p.number ? `#${p.number}` : '';

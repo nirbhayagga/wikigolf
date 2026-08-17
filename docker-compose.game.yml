@@ -83,11 +83,14 @@ services:
       # The server writes these into --data unless --state says otherwise, so
       # the two flags have to stay in step with these two mounts.
       - state:/state
-    ports:
-      # Loopback only: reachable for `curl localhost:8080/api/meta` on the host,
-      # not from the internet. Public traffic arrives via Traefik with TLS. Do
-      # not change this to "8080:8080" while --trust-proxy is set.
-      - "127.0.0.1:8080:8080"
+    # No host port at all: Traefik reaches the container over the shared
+    # docker network, and the debug hatch a loopback publish used to provide
+    # is one exec away:
+    #
+    #   docker compose -f docker-compose.game.yml exec game curl -s localhost:8080/api/meta
+    #
+    # Never add "8080:8080" here while --trust-proxy is set — a directly
+    # reachable port would let clients forge X-Forwarded-For.
     networks:
       - proxy
 
