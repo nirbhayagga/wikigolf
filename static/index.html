@@ -48,6 +48,19 @@
     --dot-s:70%; --dot-l:55%; --dot-a:.32;
   }
 
+  :root[data-theme="blossom"] {
+    --bg:#f7e8ec; --bg2:#f1dde3; --panel:#fbf1f4; --card:#f4e3e8;
+    --line:#e5cdd6; --line2:#d5b4c1;
+    --text:#362229; --dim:#8c6a76; --faint:#977883;
+    --accent:#c04d6f; --accent2:#9c6bb3;
+    --from:#2f8f63; --to:#c23a5a; --trail:#b07c1f; --locked:#c9aeb9;
+    --hover:#f0dbe2;
+    --stage-a:#fdf6f8; --stage-b:#f3e2e8;
+    --canvas-bg:#f9edf1; --canvas-ink:54,34,41; --canvas-halo:255,255,255;
+    /* Matte: lower saturation than paper, dots dark enough to sit on pink. */
+    --dot-s:55%; --dot-l:44%; --dot-a:.45;
+  }
+
   :root[data-theme="contrast"] {
     --bg:#000000; --bg2:#000000; --panel:#0a0a0a; --card:#141414;
     --line:#3a3a3a; --line2:#585858;
@@ -402,6 +415,7 @@
       <select id="theme" title="Theme" aria-label="Theme">
         <option value="midnight">Midnight</option>
         <option value="paper">Paper</option>
+        <option value="blossom">Blossom</option>
         <option value="terminal">Terminal</option>
         <option value="contrast">Contrast</option>
       </select>
@@ -517,6 +531,30 @@ async function api(p, o) {
   const r = await fetch(p, o);
   if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error || r.statusText);
   return r.json();
+}
+
+/* Runs live in server memory, so a restart mid-race forgets the id this tab
+   is holding while the race itself is still perfectly playable. Re-issue the
+   identical race — same endpoints, same exact ban via ban_degree — adopt the
+   fresh run id, and retry the failed call once. The trail and clock are
+   local, so the player never notices. Submits are deliberately NOT recovered:
+   a re-issued run's clock starts now, and a leaderboard time measured from a
+   restart would be a lie. */
+async function reissueRun() {
+  if (state.startId == null || !state.goal) throw new Error('no active race');
+  let q = `from=${state.startId}&to=${state.goal.id}`;
+  if (state.ban != null) q += `&ban_degree=${state.ban}`;
+  const p = await api(`/api/puzzle?${q}`);
+  state.run = p.run;
+  return p;
+}
+async function apiRun(call) {
+  try { return await call(); }
+  catch (e) {
+    if (!/unknown or expired/.test(e.message || '')) throw e;
+    await reissueRun();
+    return call();
+  }
 }
 
 /* ---------------- map ---------------- */
@@ -984,7 +1022,7 @@ async function finish(won) {
   // How many optimal routes existed. Asked now rather than at generation:
   // counting is a full BFS, and the player is already finished.
   try {
-    const r = await api(`/api/routes?run=${state.run}`);
+    const r = await apiRun(() => api(`/api/routes?run=${state.run}`));
     const n = r.routes;
     $('routes').innerHTML = n === 1
       ? `There was exactly <b>one</b> shortest route.`
@@ -1029,6 +1067,7 @@ async function startRace(endpoint, extra) {
     const p = await api(`${endpoint}?${q}`);
     state = blank();
     Object.assign(state, { goal:p.goal, par:p.optimal, ban:p.ban_degree, run:p.run,
+      startId:p.start.id,
       number:p.number??null, difficulty:p.difficulty||diff, compass:p.compass??0 });
     $('goal').textContent = p.goal.title;
     $('goalmeta').textContent = `${p.goal.in_degree.toLocaleString()} inbound links`;
@@ -1118,10 +1157,14 @@ $('compass').onclick = async () => {
   if (!state.goal || state.done || state.veil || state.compass <= 0 || state.dist) return;
   $('compass').disabled = true;
   try {
-    const r = await api('/api/compass', { method:'POST',
+    const prev = state.compass;
+    // The body is rebuilt per attempt: after a reissue, state.run is new.
+    const r = await apiRun(() => api('/api/compass', { method:'POST',
       headers:{'content-type':'application/json'},
-      body: JSON.stringify({ run: state.run, from: state.cur.id }) });
-    state.compass = r.charges_left;
+      body: JSON.stringify({ run: state.run, from: state.cur.id }) }));
+    // A re-issued run has a full set of charges server-side; the honest count
+    // is one less than this tab had, whichever is smaller.
+    state.compass = Math.min(r.charges_left, Math.max(0, prev - 1));
     state.dist = {};
     for (const l of r.links) state.dist[l.id] = l.dist;
     paintLinks();
@@ -1226,7 +1269,12 @@ $('post').onclick = async () => {
       : 'Accepted.';
     loadBoard();
   } catch (e) {
-    $('posted').textContent = `Rejected: ${e.message}`;
+    // A restart forgot the run: the race was real but its clock is gone, and
+    // a time measured from the restart would be fake. Say what happened
+    // instead of a cryptic rejection.
+    $('posted').textContent = /unknown or expired/.test(e.message || '')
+      ? 'The server restarted during this race, so its time can’t go on the leaderboard. The race itself still counts — rematch to post a time.'
+      : `Rejected: ${e.message}`;
     $('post').disabled = false;
   }
 };

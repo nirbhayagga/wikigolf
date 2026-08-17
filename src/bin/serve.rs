@@ -573,8 +573,16 @@ async fn puzzle(
             return err("pick two different articles").into_response();
         }
         let ban_top = q.get("ban_top").and_then(|v| v.parse::<usize>().ok());
+        // An exact degree limit, used by the client to re-issue a run with
+        // identical terms after a server restart orphaned the old id. Runs
+        // are in-memory, so a restart mid-race otherwise strands the open
+        // tab: the compass and route count would fail for a race that is
+        // still perfectly playable. ban_top cannot express a difficulty
+        // preset's ban (it is a hub count, not a degree), hence the second
+        // parameter rather than a lossy round-trip.
+        let ban_degree = q.get("ban_degree").and_then(|v| v.parse::<usize>().ok());
         let out = tokio::task::spawn_blocking(move || {
-            let limit = ban_top.and_then(|n| s.game.hub_cut(n, 0).0);
+            let limit = ban_degree.or_else(|| ban_top.and_then(|n| s.game.hub_cut(n, 0).0));
             s.with_finder(|g, pf| g.puzzle_between(pf, a, b, limit))
                 .map(|p| issue(&s, p, "custom".into(), None))
         })
