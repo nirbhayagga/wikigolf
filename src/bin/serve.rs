@@ -271,6 +271,7 @@ async fn rate_limit(
             | "/api/path"
             | "/api/puzzle"
             | "/api/daily"
+            | "/api/course"
             | "/api/submit"
             | "/api/compass"
             | "/api/routes"
@@ -1045,6 +1046,72 @@ async fn dist(
     Json(serde_json::json!({ "total": entries.len(), "hist": hist })).into_response()
 }
 
+/// The daily round: nine holes at a designed par profile, the same course
+/// for everyone, seeded by the day like the daily but salted apart from it.
+/// Holes come from the pools at their exact par (fallback: rejection
+/// sampling, which flattens the profile toward par 3 but still plays).
+/// Each hole is a normal issued run — compass, routes and submits all work
+/// per hole with no special cases.
+/// 3 holes is the daily-ritual length (~5-8 min at observed race pace);
+/// 9 is the session round. Playtests said single races already run minutes,
+/// so the short round is the default — Wordle fits in a coffee break and
+/// the default mode here has to as well.
+const COURSE_3: [usize; 3] = [3, 3, 4];
+const COURSE_9: [usize; 9] = [3, 3, 4, 3, 3, 5, 3, 4, 3];
+
+async fn course(
+    State(s): State<Shared>,
+    Query(q): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let today_day = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|t| t.as_secs() / 86_400)
+        .unwrap_or(DAILY_EPOCH_DAY);
+    let today_number = today_day.saturating_sub(DAILY_EPOCH_DAY) + 1;
+    let number = match q.get("number").and_then(|v| v.parse::<u64>().ok()) {
+        None => today_number,
+        Some(n) if n >= 1 && n <= today_number => n,
+        Some(_) => return err("that round does not exist yet").into_response(),
+    };
+    let day = DAILY_EPOCH_DAY + number - 1;
+    let pars: &'static [usize] = match q.get("holes").map(|v| v.as_str()) {
+        Some("9") => &COURSE_9,
+        _ => &COURSE_3,
+    };
+    // A different salt than the daily, or the round's first hole IS the
+    // daily; the hole count folds in so the 3- and 9-hole rounds differ too.
+    let seed = day.wrapping_mul(0xD1B5_4A32_D192_ED03)
+        ^ 0xC0FF_EE00_C0FF_EE00
+        ^ (pars.len() as u64) << 56;
+
+    let out = tokio::task::spawn_blocking(move || {
+        s.with_finder(|g, pf| {
+            let mut rng = Rng::new(seed);
+            let mut holes = Vec::with_capacity(pars.len());
+            for (i, &par) in pars.iter().enumerate() {
+                let p = g.course_hole(pf, par, &mut rng)?;
+                holes.push((i, p));
+            }
+            Some(holes)
+        })
+        .map(|holes| {
+            let issued: Vec<PuzzleResponse> = holes
+                .into_iter()
+                .map(|(i, p)| issue(&s, p, format!("round-h{}", i + 1), Some(number)))
+                .collect();
+            let par: usize = issued.iter().map(|h| h.optimal).sum();
+            serde_json::json!({ "number": number, "par": par, "holes": issued })
+        })
+    })
+    .await;
+
+    match out {
+        Ok(Some(v)) => Json(v).into_response(),
+        Ok(None) => err("could not build today's round").into_response(),
+        Err(_) => err("round generation failed").into_response(),
+    }
+}
+
 async fn map_points(
     State(s): State<Shared>,
     headers: header::HeaderMap,
@@ -1240,6 +1307,7 @@ async fn serve() -> Result<()> {
         .route("/api/submit", post(submit))
         .route("/api/leaderboard", get(leaderboard))
         .route("/api/dist", get(dist))
+        .route("/api/course", get(course))
         .route("/api/compass", post(compass))
         .route("/api/routes", get(route_count))
         // Layers run outermost-last, so rate limiting is checked before we
@@ -1349,6 +1417,10 @@ mod page_tests {
             "function startCountdown",
             "async function showDist",
             "/api/dist",
+            "$('round').onclick",
+            "$('nexthole').onclick",
+            "function startRound",
+            "function roundScorecard",
             "function reissueRun",
             "async function apiRun",
             "wr-streak",

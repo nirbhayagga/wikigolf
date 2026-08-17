@@ -695,6 +695,33 @@ impl Game {
         None
     }
 
+    /// One course hole at a designed par: exact-par draw from the pools,
+    /// verified live, with rejection sampling as the poolless fallback. The
+    /// fallback cannot target rare pars, so a fallback hole's par is
+    /// whatever it honestly is — a course still plays, its profile just
+    /// flattens toward par 3, which is the pre-pools world.
+    pub fn course_hole(
+        &self,
+        pf: &mut PathFinder,
+        target_par: usize,
+        rng: &mut Rng,
+    ) -> Option<Puzzle> {
+        if let Some(pools) = &self.pools {
+            for _ in 0..8 {
+                let Some((a, b)) = pools.pick_par(Difficulty::Easy, target_par, rng) else {
+                    break;
+                };
+                let Some(path) = pf.shortest_path(&self.graph, a, b, &|_| false) else {
+                    continue;
+                };
+                if path.len() - 1 == target_par {
+                    return Some(Puzzle { start: a, goal: b, ban_degree: None, optimal: target_par });
+                }
+            }
+        }
+        self.puzzle_with(pf, None, 3, rng)
+    }
+
     /// A race where both endpoints come from one map region (community).
     ///
     /// Regions are topical — that is the whole point of Leiden — so this is

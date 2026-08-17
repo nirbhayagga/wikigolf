@@ -108,6 +108,8 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 | `/api/daily` | 41 ms | Seeded by the day. |
 | `/api/compass` | 1.4 s first per goal | Then cached; charges scale with par. |
 | `/api/routes` | 31–142 ms | Shortest-route count, asked after the race. |
+| `/api/dist` | free | Clicks histogram of one daily board — the "38% made par" line. |
+| `/api/course` | ~9x41 ms | 3- or 9-hole round: exact-par holes from the pools, seeded per day, each hole a normal issued run. |
 | `/api/submit` · `/api/leaderboard` | — | Re-walks the submitted path; never trusts a score. |
 
 ### Load-bearing details

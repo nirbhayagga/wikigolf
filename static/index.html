@@ -371,8 +371,9 @@
             it is not a way to think for free.</li>
         <li>The <b>★ Daily</b> is the same race for everyone, in three
             difficulties, with a 🔥 <b>streak</b> for consecutive days on this
-            device. Type a number to replay any <b>past daily</b> (archive
-            plays don't advance streaks).</li>
+            device. The <b>⛳ Round</b> strings 3 (or 9) holes into one
+            scorecard. Type a number to replay any <b>past daily or round</b>
+            (archive plays don't advance streaks).</li>
         <li><b>Topic races</b> keep both endpoints inside one region of the
             map; <b>Pick your own race</b> takes any two articles. Either way
             the address bar is always a share link to the exact race.</li>
@@ -393,6 +394,7 @@
       <div class="score" id="score"></div>
       <div class="score" id="routes"></div>
       <div id="squares"></div>
+      <button class="primary" id="nexthole" style="display:none; width:100%; margin-top:10px">Next hole &rarr;</button>
       <div class="lbl2" id="dailydist"></div>
       <div class="lbl2" id="nextdaily"></div>
       <div class="row" style="margin-top:14px">
@@ -437,6 +439,11 @@
     <div class="row">
       <button class="primary" id="new" style="flex:1">Random race</button>
       <button id="daily" style="flex:1">&#9733; Daily</button>
+      <button id="round" style="flex:1" title="A scored course of holes — one card at the end">&#9971; Round</button>
+      <select id="rholes" title="Holes per round" aria-label="Holes per round" style="max-width:52px">
+        <option value="3" selected>3</option>
+        <option value="9">9</option>
+      </select>
       <input id="dnum" placeholder="#" title="Play a past daily by number (archive plays don't advance streaks)" style="max-width:46px">
       <select id="ddiff" title="Daily difficulty" aria-label="Daily difficulty" style="max-width:74px">
         <option value="medium" selected>med</option>
@@ -1089,7 +1096,16 @@ async function finish(won) {
     ? `Hard mode: routes through articles with more than ${state.ban.toLocaleString()} inbound links were banned for both you and the optimal route.`
     : '';
   $('result').style.display='grid';
-  if (state.number != null) {
+  if (ROUND) {
+    roundHoleDone(won, clicks, par);
+    if (ROUND.idx + 1 < ROUND.holes.length) {
+      // Mid-round: the verdict is the hole, the button is the next tee.
+      $('verdict').textContent += `  ·  hole ${ROUND.idx+1}/${ROUND.holes.length}`;
+      $('nexthole').style.display = '';
+    } else {
+      roundScorecard();
+    }
+  } else if (state.number != null) {
     showDist();
     if (!state.archive) startCountdown();
   }
@@ -1184,27 +1200,8 @@ async function startRace(endpoint, extra) {
       : `difficulty=hard&ban_top=${HUB_STOPS[+$('hubs').value]}`;
     const diff = isDaily ? 'daily' : 'custom';
     const p = await api(`${endpoint}?${q}`);
-    state = blank();
-    stopDailyTicker();
-    Object.assign(state, {
-      // An archive play is any daily fetched by explicit number: it replays
-      // history, so it must not touch the streak.
-      archive: isDaily && !!anum,
-      goal:p.goal, par:p.optimal, ban:p.ban_degree, run:p.run,
-      startId:p.start.id,
-      number:p.number??null, difficulty:p.difficulty||diff, compass:p.compass??0 });
-    $('goal').textContent = p.goal.title;
-    $('goalmeta').textContent = (p.goal.desc ? `${p.goal.desc} · ` : '')
-      + `${p.goal.in_degree.toLocaleString()} inbound links`
-      + (p.goal.views ? ` · ${fmtViews(p.goal.views)} reads/mo` : '');
-    $('par').textContent = p.optimal;
-    $('time').textContent = '0:00';
-    $('pnum').textContent = p.number ? `#${p.number}` : '';
-    setRaceUrl(p);
-    await go(p.start.id);
-    // Armed, not started. setVeil('ready') holds the clock at 0:00 until the
-    // player says go — the daily used to begin timing during page load.
-    setVeil('ready');
+    ROUND = null; // starting any single race abandons an in-progress round
+    await adoptPuzzle(p, { archive: isDaily && !!anum, difficulty: diff });
   } catch(e) {
     $('links').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
     // Rethrown so a caller that has somewhere better to put the message — the
@@ -1212,6 +1209,80 @@ async function startRace(endpoint, extra) {
     // Callers with nowhere to show it swallow it explicitly.
     throw e;
   } finally { for (const b of ['new','daily']) $(b).disabled = false; }
+}
+
+/* Load one issued puzzle into play. Shared by single races and course
+   holes so the two can never drift: a hole IS a race, with the compass,
+   the map, the veil and the clock all behaving identically. */
+async function adoptPuzzle(p, opts) {
+  state = blank();
+  stopDailyTicker();
+  $('nexthole').style.display = 'none';
+  Object.assign(state, {
+    archive: !!opts.archive,
+    goal:p.goal, par:p.optimal, ban:p.ban_degree, run:p.run,
+    startId:p.start.id,
+    number:p.number??null, difficulty:p.difficulty||opts.difficulty, compass:p.compass??0 });
+  $('goal').textContent = p.goal.title;
+  $('goalmeta').textContent = (p.goal.desc ? `${p.goal.desc} · ` : '')
+    + `${p.goal.in_degree.toLocaleString()} inbound links`
+    + (p.goal.views ? ` · ${fmtViews(p.goal.views)} reads/mo` : '');
+  $('par').textContent = p.optimal;
+  $('time').textContent = '0:00';
+  $('pnum').textContent = ROUND
+    ? `Round #${ROUND.number} · hole ${ROUND.idx+1}/${ROUND.holes.length}`
+    : (p.number ? `#${p.number}` : '');
+  setRaceUrl(p);
+  await go(p.start.id);
+  // Armed, not started. setVeil('ready') holds the clock at 0:00 until the
+  // player says go.
+  setVeil('ready');
+}
+
+/* ---------------- the daily round ----------------
+   Nine holes, one designed par profile, one scorecard. ROUND survives
+   state = blank() on purpose: it is the thing that spans races. */
+let ROUND = null;
+
+async function startRound() {
+  for (const b of ['new','daily','round']) $(b).disabled = true;
+  $('result').style.display='none';
+  try {
+    const anum = $('dnum').value.trim();
+    const qp = new URLSearchParams({ holes: $('rholes').value });
+    if (anum) qp.set('number', anum);
+    const c = await api(`/api/course?${qp}`);
+    ROUND = { number: c.number, par: c.par, holes: c.holes, idx: 0,
+              strokes: [], pars: [], archive: !!anum };
+    await adoptPuzzle(c.holes[0], { archive: ROUND.archive, difficulty: 'round' });
+  } catch(e) {
+    $('links').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  } finally { for (const b of ['new','daily','round']) $(b).disabled = false; }
+}
+
+/* Record the finished hole. A give-up is a "pickup" at par+3, golf's
+   informal mercy rule — a round must always be finishable. */
+function roundHoleDone(won, clicks, par) {
+  ROUND.strokes.push(won ? clicks : par + 3);
+  ROUND.pars.push(par);
+}
+
+function roundScorecard() {
+  const total = ROUND.strokes.reduce((a,b)=>a+b, 0);
+  const parTotal = ROUND.pars.reduce((a,b)=>a+b, 0);
+  const overall = total - parTotal;
+  const rel = ROUND.strokes.map((s,i) => s - ROUND.pars[i]);
+  const marks = rel.map(d => d<=0 ? '\u26F3' : d===1 ? '\u{1F7E8}' : '\u{1F7E5}').join('');
+  $('verdict').textContent =
+    `Round ${overall<=0 ? 'at par! \u26F3' : `+${overall}`} — ${total} strokes`;
+  $('score').innerHTML =
+    `course par <b>${parTotal}</b> · holes: ` +
+    ROUND.strokes.map((s,i)=>`${s}/${ROUND.pars[i]}`).join(' · ');
+  $('squares').textContent = marks;
+  state.share = `WikiGolf Round #${ROUND.number}` +
+    ` — ${total} strokes, par ${parTotal} (${overall<=0?'at par \u26F3':'+'+overall})\n` +
+    marks + `\n${location.origin}${location.pathname}`;
+  ROUND = null;
 }
 
 /* ---------------- leaderboard ----------------
@@ -1356,6 +1427,13 @@ $('tgo').onclick = () => {
   if (c === '') return;
   startRace('/api/puzzle', `region=${c}&difficulty=medium`)
     .catch(e => { $('cerr').textContent = e.message; });
+};
+
+$('round').onclick = () => startRound();
+$('nexthole').onclick = async () => {
+  $('nexthole').style.display = 'none';
+  ROUND.idx += 1;
+  await adoptPuzzle(ROUND.holes[ROUND.idx], { archive: ROUND.archive, difficulty: 'round' });
 };
 
 $('new').onclick   = () => startRace('/api/puzzle').catch(()=>{});
@@ -1592,7 +1670,10 @@ window.addEventListener('keydown', e => {
   // First visit only, unless it was turned off. Shown after the race is armed
   // so the goal is already on screen behind it, and the clock is not running
   // either way — a race is armed, not started.
-  if (localStorage.getItem('wr-help') !== 'off') showHelp(true);
+  // A share-link arrival lands in the armed race, not behind a popup — the
+  // "?" button is right there for anyone who wants the rules first.
+  const arrivedViaShare = new URLSearchParams(location.search).size > 0;
+  if (!arrivedViaShare && localStorage.getItem('wr-help') !== 'off') showHelp(true);
 
   const qp = new URLSearchParams(location.search);
   const [uf, ut] = [qp.get('from'), qp.get('to')];
