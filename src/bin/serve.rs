@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use wiki_parser::game::{Difficulty, Game, Rng};
+use wiki_parser::game::{course_seed, daily_seed, today_day, Difficulty, Game, Rng, COURSE_3, COURSE_9, DAILY_EPOCH_DAY};
 use wiki_parser::graph::PathFinder;
 use wiki_parser::identity::Identity;
 use wiki_parser::ratelimit::RateLimiter;
@@ -459,7 +459,6 @@ struct BoardRow {
 }
 
 /// Day 0 of the daily challenge: 2026-01-01 UTC, as a Unix day index.
-const DAILY_EPOCH_DAY: u64 = 20_454;
 
 // Rate limits, per IP. Reads are generous because normal play issues one
 // article fetch per click. Heavy endpoints each cost a full-title scan or a
@@ -483,21 +482,22 @@ fn puzzle_from_seed(
     app.with_finder(|g, pf| {
         // An explicit hub cut from the slider overrides the difficulty preset's
         // ban, but keeps its minimum route length — the two dials control
-        // different things.
-        let custom = ban_top.map(|n| g.hub_cut(n, 0).0);
-        let mut s = seed;
-        for _ in 0..6 {
-            let mut rng = Rng::new(s);
-            let found = match custom {
-                Some(ban) => g.puzzle_with(pf, ban, 3, &mut rng),
-                None => g.puzzle(pf, d, &mut rng),
-            };
-            if found.is_some() {
-                return found;
+        // different things. The no-slider path is the shared seeded generator,
+        // so the server and the static exporter produce identical dailies.
+        match ban_top.map(|n| g.hub_cut(n, 0).0) {
+            None => g.seeded_puzzle(pf, d, seed),
+            Some(ban) => {
+                let mut s = seed;
+                for _ in 0..6 {
+                    let mut rng = Rng::new(s);
+                    if let Some(p) = g.puzzle_with(pf, ban, 3, &mut rng) {
+                        return Some(p);
+                    }
+                    s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                }
+                None
             }
-            s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
         }
-        None
     })
 }
 
@@ -1012,11 +1012,7 @@ async fn daily(
     let name = q.get("difficulty").cloned().unwrap_or_else(|| "medium".into());
     let d = Difficulty::parse(&name);
 
-    let today_day = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|t| t.as_secs() / 86_400)
-        .unwrap_or(DAILY_EPOCH_DAY);
-    let today_number = today_day.saturating_sub(DAILY_EPOCH_DAY) + 1;
+    let today_number = today_day().saturating_sub(DAILY_EPOCH_DAY) + 1;
 
     // The archive: any past daily by number. The seed is a pure function of
     // the day, so old dailies replay exactly. Future numbers stay sealed —
@@ -1026,13 +1022,7 @@ async fn daily(
         Some(n) if n >= 1 && n <= today_number => n,
         Some(_) => return err("that daily does not exist yet").into_response(),
     };
-    let day = DAILY_EPOCH_DAY + number - 1;
-
-    // Mix the difficulty into the seed so each difficulty has its own daily
-    // rather than three names for one race.
-    let seed = day
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        ^ (d as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let seed = daily_seed(DAILY_EPOCH_DAY + number - 1, d);
 
     let label = name.clone();
     let out = tokio::task::spawn_blocking(move || {
@@ -1072,37 +1062,21 @@ async fn dist(
 /// sampling, which flattens the profile toward par 3 but still plays).
 /// Each hole is a normal issued run — compass, routes and submits all work
 /// per hole with no special cases.
-/// 3 holes is the daily-ritual length (~5-8 min at observed race pace);
-/// 9 is the session round. Playtests said single races already run minutes,
-/// so the short round is the default — Wordle fits in a coffee break and
-/// the default mode here has to as well.
-const COURSE_3: [usize; 3] = [3, 3, 4];
-const COURSE_9: [usize; 9] = [3, 3, 4, 3, 3, 5, 3, 4, 3];
-
 async fn course(
     State(s): State<Shared>,
     Query(q): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let today_day = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|t| t.as_secs() / 86_400)
-        .unwrap_or(DAILY_EPOCH_DAY);
-    let today_number = today_day.saturating_sub(DAILY_EPOCH_DAY) + 1;
+    let today_number = today_day().saturating_sub(DAILY_EPOCH_DAY) + 1;
     let number = match q.get("number").and_then(|v| v.parse::<u64>().ok()) {
         None => today_number,
         Some(n) if n >= 1 && n <= today_number => n,
         Some(_) => return err("that round does not exist yet").into_response(),
     };
-    let day = DAILY_EPOCH_DAY + number - 1;
     let pars: &'static [usize] = match q.get("holes").map(|v| v.as_str()) {
         Some("9") => &COURSE_9,
         _ => &COURSE_3,
     };
-    // A different salt than the daily, or the round's first hole IS the
-    // daily; the hole count folds in so the 3- and 9-hole rounds differ too.
-    let seed = day.wrapping_mul(0xD1B5_4A32_D192_ED03)
-        ^ 0xC0FF_EE00_C0FF_EE00
-        ^ (pars.len() as u64) << 56;
+    let seed = course_seed(DAILY_EPOCH_DAY + number - 1, pars.len());
 
     let out = tokio::task::spawn_blocking(move || {
         s.with_finder(|g, pf| {

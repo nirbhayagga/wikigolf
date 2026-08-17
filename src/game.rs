@@ -464,7 +464,51 @@ impl Rng {
     }
 }
 
+/// Day zero of the daily numbering. Shared by the server and the static
+/// exporter — two copies of this constant would eventually disagree about
+/// what day it is, which is the worst possible bug for a daily game.
+pub const DAILY_EPOCH_DAY: u64 = 20_454;
+
+pub fn today_day() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|t| t.as_secs() / 86_400)
+        .unwrap_or(DAILY_EPOCH_DAY)
+}
+
+/// Each difficulty gets its own daily rather than three names for one race.
+pub fn daily_seed(day: u64, d: Difficulty) -> u64 {
+    day.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (d as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9)
+}
+
+/// Salted apart from the daily, or the round's first hole IS the daily; the
+/// hole count folds in so the 3- and 9-hole rounds differ too.
+pub fn course_seed(day: u64, holes: usize) -> u64 {
+    day.wrapping_mul(0xD1B5_4A32_D192_ED03) ^ 0xC0FF_EE00_C0FF_EE00 ^ ((holes as u64) << 56)
+}
+
+/// The designed par profiles: 3 holes is the daily-ritual length, 9 the
+/// session round.
+pub const COURSE_3: [usize; 3] = [3, 3, 4];
+pub const COURSE_9: [usize; 9] = [3, 3, 4, 3, 3, 5, 3, 4, 3];
+
 impl Game {
+    /// Generate deterministically from a seed, retrying with a derived seed
+    /// if a seed happens to produce no qualifying pair. Determinism is the
+    /// whole point — everyone must get the same race — so the retry is a
+    /// pure function of the seed too, never of wall-clock or attempt timing.
+    pub fn seeded_puzzle(&self, pf: &mut PathFinder, d: Difficulty, seed: u64) -> Option<Puzzle> {
+        let mut s = seed;
+        for _ in 0..6 {
+            let mut rng = Rng::new(s);
+            if let Some(p) = self.puzzle(pf, d, &mut rng) {
+                return Some(p);
+            }
+            s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        }
+        None
+    }
+
     pub fn load(data_dir: &Path) -> Result<Game> {
         Self::load_with(data_dir, true)
     }
