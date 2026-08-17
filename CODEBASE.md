@@ -85,7 +85,7 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 | `01_graph_compute.py` | 840 | **PC** | PageRank (phase 1), SFDP layout + Leiden (phase 2), merge + attach titles (phase 3). |
 | `02_video_stats.py` | 92 | **PC** | Orphans, dead ends, reciprocity. OOM-killed on 15 GB. |
 | `03_name_clusters.py` | 95 | laptop | Gemini community labels. **The only script needing an API key.** Now optional — categories name regions for free. |
-| `04_app.py` | 232 | PC | Panel + Datashader interactive viewer. |
+| `04_app.py` | ~380 | PC | Panel + Datashader interactive viewer. Click any point (or a search hit) to highlight its incoming/outgoing links, isolate one region, inspect degree and neighbours. Edge highlighting wants `edges.parquet` and ~3 GB extra; degrades to the plain raster without it. Pure-numpy grid index for click resolution — the viewer image bans scipy. |
 | `05_export_png.py` | 238 | PC | 4K poster export. `--color winner` colours each pixel by its dominant community. |
 | `06_community_stats.py` | 91 | laptop | Per-community JSON. Runs in 3.5 s. |
 | `07_incremental.py` | 92 | either | Cache status and reset. |
