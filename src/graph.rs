@@ -255,12 +255,14 @@ pub struct PathFinder {
     parent_b: Vec<u32>,
     touched_f: Vec<u32>,
     touched_b: Vec<u32>,
-    /// Shortest-route counts, used only by `count_shortest_paths`. Allocated
-    /// lazily on the first count — a finder that only ever does path queries
-    /// never pays the 58 MB — and reused ever after, cleared through
-    /// `touched_f` like the distance arrays. Allocating this per call was
-    /// measured to roughly double the counting phase's cost at enwiki scale.
+    /// Shortest-route counts for the two BFS directions, used only by
+    /// `count_shortest_paths`. Allocated lazily on the first count — a
+    /// finder that only ever does path queries never pays the 2 x 58 MB —
+    /// and reused ever after, cleared through the touched lists like the
+    /// distance arrays. Allocating per call was measured to roughly double
+    /// the counting phase's cost at enwiki scale.
     sigma: Vec<u64>,
+    sigma_b: Vec<u64>,
 }
 
 /// Sentinel for "not reached". Real BFS depths stay far below this.
@@ -276,6 +278,7 @@ impl PathFinder {
             touched_f: Vec::new(),
             touched_b: Vec::new(),
             sigma: Vec::new(),
+            sigma_b: Vec::new(),
         }
     }
 
@@ -290,6 +293,9 @@ impl PathFinder {
         for &v in &self.touched_b {
             self.dist_b[v as usize] = UNSEEN;
             self.parent_b[v as usize] = NONE;
+            if !self.sigma_b.is_empty() {
+                self.sigma_b[v as usize] = 0;
+            }
         }
         self.touched_f.clear();
         self.touched_b.clear();
@@ -418,13 +424,17 @@ impl PathFinder {
     /// harder puzzle than four clicks with two hundred, and the player feels
     /// the difference immediately.
     ///
-    /// Deliberately *not* bidirectional. The bidirectional search stops the
-    /// instant the two frontiers touch, which is what makes it 22 ms — but it
-    /// therefore never sees the rest of the shortest-path DAG, and the count
-    /// lives in exactly that part. So this is a single forward BFS carrying a
-    /// path count alongside the depth, expanding whole levels until the goal's
-    /// level completes. Expect seconds, not milliseconds: it belongs at puzzle
-    /// generation, never in a request handler.
+    /// Bidirectional, done carefully — the naive objection is that a
+    /// bidirectional search never sees the whole shortest-path DAG, and it
+    /// does not need to: every shortest path of length L crosses the cut
+    /// between forward-depth a and a+1 exactly once, at a vertex whose
+    /// forward depth is exactly a (a smaller depth would shorten the path).
+    /// So with both sides expanded level-complete and carrying path counts,
+    /// the answer is Σ σ_f(v)·σ_b(v) over the meeting level. The first
+    /// version expanded from one side only, which made a par-6 count walk
+    /// essentially the whole graph (~2-4 s at enwiki scale, a 6-9 hour pools
+    /// run); meeting in the middle makes it cost like two half-depth
+    /// searches.
     ///
     /// Counts saturate rather than wrap. Between two well-connected articles
     /// the number of four-click routes runs into the billions, and a silently
@@ -445,52 +455,113 @@ impl PathFinder {
         if start as usize >= n || goal as usize >= n {
             return None;
         }
-
-        // sigma[v] = number of shortest routes from `start` to v. Sparse:
-        // only vertices this search touches are ever written, and `touched_f`
-        // already records exactly those for the reset (see the field doc).
         if self.sigma.is_empty() {
             self.sigma = vec![0; n];
+            self.sigma_b = vec![0; n];
         }
-        // Disjoint borrows of the scratch arrays, so sigma can live in self
-        // (reused across calls) while dist and touched are written in the
-        // same loop.
-        let PathFinder { dist_f, touched_f, sigma, .. } = self;
+        let PathFinder { dist_f, dist_b, touched_f, touched_b, sigma, sigma_b, .. } = self;
+
         sigma[start as usize] = 1;
         dist_f[start as usize] = 0;
         touched_f.push(start);
+        sigma_b[goal as usize] = 1;
+        dist_b[goal as usize] = 0;
+        touched_b.push(goal);
 
-        let mut frontier = vec![start];
-        let mut depth = 0u8;
+        let mut frontier_f = vec![start];
+        let mut frontier_b = vec![goal];
+        let (mut depth_f, mut depth_b) = (0u8, 0u8);
 
-        while !frontier.is_empty() && depth < max_depth {
-            depth += 1;
-            let mut next = Vec::new();
-            for &v in &frontier {
-                let sv = sigma[v as usize];
-                for &w in g.forward.neighbors(v) {
-                    if w != goal && banned(w) {
-                        continue;
+        while !frontier_f.is_empty()
+            && !frontier_b.is_empty()
+            && depth_f + depth_b < max_depth
+        {
+            // Expand whichever side is cheaper, exactly like shortest_path —
+            // on a hubby graph the frontiers grow at wildly different rates.
+            let forward = frontier_f.len() <= frontier_b.len();
+            let mut next: Vec<u32> = Vec::new();
+
+            if forward {
+                depth_f += 1;
+                for &v in &frontier_f {
+                    let sv = sigma[v as usize];
+                    for &w in g.forward.neighbors(v) {
+                        if w != goal && banned(w) {
+                            continue;
+                        }
+                        let d = dist_f[w as usize];
+                        if d == UNSEEN {
+                            dist_f[w as usize] = depth_f;
+                            touched_f.push(w);
+                            sigma[w as usize] = sv;
+                            next.push(w);
+                        } else if d == depth_f {
+                            sigma[w as usize] = sigma[w as usize].saturating_add(sv);
+                        }
                     }
-                    let d = dist_f[w as usize];
-                    if d == UNSEEN {
-                        dist_f[w as usize] = depth;
-                        touched_f.push(w);
-                        sigma[w as usize] = sv;
-                        next.push(w);
-                    } else if d == depth {
-                        // Another route of the same length into w. Reached on
-                        // this level, so it is still a *shortest* route.
-                        sigma[w as usize] = sigma[w as usize].saturating_add(sv);
+                }
+            } else {
+                depth_b += 1;
+                for &v in &frontier_b {
+                    let sv = sigma_b[v as usize];
+                    for &w in g.reverse.neighbors(v) {
+                        if w != start && banned(w) {
+                            continue;
+                        }
+                        let d = dist_b[w as usize];
+                        if d == UNSEEN {
+                            dist_b[w as usize] = depth_b;
+                            touched_b.push(w);
+                            sigma_b[w as usize] = sv;
+                            next.push(w);
+                        } else if d == depth_b {
+                            sigma_b[w as usize] = sigma_b[w as usize].saturating_add(sv);
+                        }
                     }
                 }
             }
-            // Finish the level before deciding: stopping at first sight of the
-            // goal would count only the routes found so far on it.
-            if dist_f[goal as usize] == depth {
-                return Some((depth as usize, sigma[goal as usize]));
+
+            // The level is complete; look for the meet. L is the smallest
+            // total over the fresh frontier, and the cut is this side's new
+            // level: the position-`depth` vertex of every shortest path sits
+            // in `next` (its depth on this side is exact), with the other
+            // side's level at L-depth already complete.
+            let (own_depth, other_dist, own_sigma, other_sigma): (u8, &Vec<u8>, _, _) = if forward
+            {
+                (depth_f, &*dist_b, &*sigma, &*sigma_b)
+            } else {
+                (depth_b, &*dist_f, &*sigma_b, &*sigma)
+            };
+            let mut best: Option<u8> = None;
+            for &v in &next {
+                let od = other_dist[v as usize];
+                if od != UNSEEN {
+                    let total = own_depth + od;
+                    if best.is_none_or(|b| total < b) {
+                        best = Some(total);
+                    }
+                }
             }
-            frontier = next;
+            if let Some(total) = best {
+                if total as usize > max_depth as usize {
+                    return None;
+                }
+                let mut count = 0u64;
+                let want = total - own_depth;
+                for &v in &next {
+                    if other_dist[v as usize] == want {
+                        count = count
+                            .saturating_add(own_sigma[v as usize].saturating_mul(other_sigma[v as usize]));
+                    }
+                }
+                return Some((total as usize, count));
+            }
+
+            if forward {
+                frontier_f = next;
+            } else {
+                frontier_b = next;
+            }
         }
         None
     }
@@ -643,6 +714,91 @@ pub(crate) mod tests_support {
 mod counting_tests {
     use super::tests_support::*;
     use super::*;
+
+    /// The original single-direction counter, kept verbatim as the oracle:
+    /// a full forward BFS carrying counts, expanding whole levels until the
+    /// goal's level completes. Slow and simple — exactly what a reference
+    /// should be.
+    fn count_reference(
+        g: &Graph,
+        start: u32,
+        goal: u32,
+        banned: &dyn Fn(u32) -> bool,
+        max_depth: u8,
+    ) -> Option<(usize, u64)> {
+        if start == goal {
+            return Some((0, 1));
+        }
+        let n = g.len();
+        let mut dist = vec![u8::MAX; n];
+        let mut sigma = vec![0u64; n];
+        sigma[start as usize] = 1;
+        dist[start as usize] = 0;
+        let mut frontier = vec![start];
+        let mut depth = 0u8;
+        while !frontier.is_empty() && depth < max_depth {
+            depth += 1;
+            let mut next = Vec::new();
+            for &v in &frontier {
+                let sv = sigma[v as usize];
+                for &w in g.forward.neighbors(v) {
+                    if w != goal && banned(w) {
+                        continue;
+                    }
+                    let d = dist[w as usize];
+                    if d == u8::MAX {
+                        dist[w as usize] = depth;
+                        sigma[w as usize] = sv;
+                        next.push(w);
+                    } else if d == depth {
+                        sigma[w as usize] = sigma[w as usize].saturating_add(sv);
+                    }
+                }
+            }
+            if dist[goal as usize] == depth {
+                return Some((depth as usize, sigma[goal as usize]));
+            }
+            frontier = next;
+        }
+        None
+    }
+
+    /// The meet-in-the-middle counter must agree with the oracle on every
+    /// pair of every graph, banned and unbanned, at every depth cap. Random
+    /// graphs from a fixed LCG so a failure reproduces.
+    #[test]
+    fn bidirectional_count_matches_the_oracle() {
+        let mut seed = 0x1234_5678_9ABC_DEFu64;
+        let mut rand = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as u32
+        };
+        for trial in 0..40 {
+            let n = 8 + (rand() % 20);
+            let m = n * (1 + rand() % 4);
+            let edges: Vec<(u32, u32)> = (0..m)
+                .map(|_| (rand() % n, rand() % n))
+                .filter(|(a, b)| a != b)
+                .collect();
+            let g = graph(n, &edges);
+            let mut pf = PathFinder::new(g.len());
+            for ban_limit in [None, Some(2usize)] {
+                let banned = |v: u32| ban_limit.is_some_and(|l| g.reverse.degree(v) > l);
+                for s in 0..n {
+                    for t in 0..n {
+                        for cap in [3u8, 5, 8] {
+                            let got = pf.count_shortest_paths(&g, s, t, &banned, cap);
+                            let want = count_reference(&g, s, t, &banned, cap);
+                            assert_eq!(
+                                got, want,
+                                "trial {trial} n={n} {s}->{t} cap={cap} ban={ban_limit:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     fn count(g: &Graph, s: u32, t: u32) -> Option<(usize, u64)> {
         PathFinder::new(g.len()).count_shortest_paths(g, s, t, &|_| false, 12)
