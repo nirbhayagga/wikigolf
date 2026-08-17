@@ -557,6 +557,59 @@ impl Game {
         None
     }
 
+    /// A race where both endpoints come from one map region (community).
+    ///
+    /// Regions are topical — that is the whole point of Leiden — so this is
+    /// "get from one physicist to another" rather than across the map.
+    /// Rejection sampling is fine here: the pool cannot help (it has no
+    /// region column) and in-region pairs are dense enough that the accept
+    /// rate stays high. The difficulty's hub ban still applies; its minimum
+    /// length is relaxed by one (floor 2) because a tight community often has
+    /// no pair further apart than that, and a 2-click race inside a topic is
+    /// still a real race in a way a 2-click race across all of Wikipedia is
+    /// not.
+    pub fn puzzle_in_region(
+        &self,
+        pf: &mut PathFinder,
+        region: i32,
+        d: Difficulty,
+        rng: &mut Rng,
+    ) -> Option<Puzzle> {
+        let layout = self.layout.as_ref()?;
+        let (ban, min_len) = d.rules();
+        let min_len = min_len.saturating_sub(1).max(2);
+        let members: Vec<u32> = self
+            .playable
+            .iter()
+            .copied()
+            .filter(|&v| layout.community[v as usize] == region)
+            .filter(|&v| ban.is_none_or(|limit| self.graph.reverse.degree(v) <= limit))
+            .collect();
+        if members.len() < 2 {
+            return None;
+        }
+        let rev = &self.graph.reverse;
+        let banned: Box<dyn Fn(u32) -> bool + '_> = match ban {
+            Some(limit) => Box::new(move |v: u32| rev.degree(v) > limit),
+            None => Box::new(|_| false),
+        };
+        for _ in 0..60 {
+            let a = members[rng.below(members.len())];
+            let b = members[rng.below(members.len())];
+            if a == b {
+                continue;
+            }
+            let Some(path) = pf.shortest_path(&self.graph, a, b, &banned) else {
+                continue;
+            };
+            let optimal = path.len() - 1;
+            if optimal >= min_len && optimal <= min_len + 4 {
+                return Some(Puzzle { start: a, goal: b, ban_degree: ban, optimal });
+            }
+        }
+        None
+    }
+
     /// A race between two articles the player chose, rather than a generated
     /// pair.
     ///

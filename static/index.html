@@ -387,7 +387,7 @@
         <button id="post">Submit score</button>
       </div>
       <div class="score" id="posted" style="margin-top:7px"></div>
-      <div class="routebox"><div class="lbl" id="routelbl"></div><div id="route"></div></div>
+      <div class="routebox"><div class="lbl" id="routelbl"><span id="routetxt"></span> <button class="ghost" id="replay" style="display:none; padding:2px 8px; font-size:12px">&#9654; watch it</button></div><div id="route"></div></div>
       <div class="routebox" id="fromherebox" style="display:none">
         <div class="lbl" id="fromherelbl"></div><div id="fromhere"></div>
       </div>
@@ -445,6 +445,11 @@
       <div id="chitsB" class="hits"></div>
       <button class="primary" id="cgo" disabled>Race</button>
       <div class="lbl2" id="cerr"></div>
+      <div class="lbl" style="margin-top:10px">Topic race &mdash; both articles from one region</div>
+      <div style="display:flex; gap:6px">
+        <select id="topic" style="flex:1; min-width:0"><option value="">pick a topic&hellip;</option></select>
+        <button class="primary" id="tgo" disabled>Go</button>
+      </div>
     </details>
   </header>
 
@@ -646,14 +651,29 @@ function draw(t) {
   // are visible at once.
   const best = (state.best || []).filter(a => a.x != null);
   if (best.length > 1) {
+    // Replay: reveal the route hop by hop with a dot travelling along it.
+    // Progress is a pure function of the clock, so the continuous draw loop
+    // animates it with no timers to manage.
+    let upto = best.length - 1, frac = 0, dot = null;
+    if (state.replay) {
+      const t = Math.max(0, (performance.now() - state.replay.t0) / 700); // hops
+      if (t >= best.length - 1) state.replay = null;
+      else {
+        upto = Math.floor(t); frac = t - upto;
+        const a = best[upto], b = best[upto + 1];
+        dot = { x: a.x + (b.x - a.x) * frac, y: a.y + (b.y - a.y) * frac };
+      }
+    }
     ctx.save();
     ctx.strokeStyle = TH.best; ctx.globalAlpha = .85; ctx.lineWidth = 1.8;
     ctx.setLineDash([6, 5]); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     ctx.beginPath(); ctx.moveTo(px(best[0].x), py(best[0].y));
-    for (const p of best.slice(1)) ctx.lineTo(px(p.x), py(p.y));
+    for (const p of best.slice(1, upto + 1)) ctx.lineTo(px(p.x), py(p.y));
+    if (dot) ctx.lineTo(px(dot.x), py(dot.y));
     ctx.stroke(); ctx.restore();
     ctx.globalAlpha = 1;
-    for (const p of best.slice(1, -1)) mark(p, TH.best, 2.5);
+    for (const p of best.slice(1, Math.max(1, upto + (dot ? 1 : 0)))) mark(p, TH.best, 2.5);
+    if (dot) mark(dot, TH.best, 4);
   }
 
   const pts = state.trail.filter(a => a.x != null);
@@ -958,11 +978,28 @@ async function finish(won) {
     ? `<b>${clicks}</b> clicks &nbsp;·&nbsp; par <b>${par}</b> &nbsp;·&nbsp; <b>${mmss(state.elapsed)}</b>`
     : `par was <b>${par}</b>`;
 
+  // Daily streak, tracked on this device: consecutive daily numbers won.
+  // localStorage rather than the server, so it needs no account and costs
+  // nothing — the tradeoff is that clearing the browser clears the streak.
+  let streak = 0;
+  if (won && state.number != null) {
+    let s = {};
+    try { s = JSON.parse(localStorage.getItem('wr-streak')) || {}; } catch {}
+    if (s.last !== state.number) {
+      s.streak = (s.last === state.number - 1) ? (s.streak || 0) + 1 : 1;
+      s.last = state.number;
+      s.best = Math.max(s.best || 0, s.streak);
+      localStorage.setItem('wr-streak', JSON.stringify(s));
+    }
+    streak = s.streak || 0;
+    if (streak > 1) $('verdict').textContent += ` · 🔥${streak}`;
+  }
+
   // Green while inside par, red for every click past it.
   const sq = state.steps.map(s => s?'🟩':'🟥');
   $('squares').textContent = won ? sq.join('') : '';
   state.share = (state.number?`Wiki Race #${state.number}`:'Wiki Race')+
-    ` (${state.difficulty})\n`+
+    ` (${state.difficulty})`+(streak>1?` · 🔥${streak}-day streak`:'')+`\n`+
     (won ? `${clicks} clicks · par ${par} · ${mmss(state.elapsed)}\n${sq.join('')}` : `gave up · par ${par}`)+
     (state.url ? `\n${state.url}` : '');
 
@@ -973,7 +1010,8 @@ async function finish(won) {
   $('posted').textContent = '';
   $('nick').value = localStorage.getItem('wr-nick') || '';
 
-  $('routelbl').textContent = 'A shortest route';
+  $('routetxt').textContent = 'A shortest route';
+  $('replay').style.display = 'none';
   $('routes').textContent = 'counting routes…';
   $('route').innerHTML = '<div class="empty">finding&hellip;</div>';
   $('note').textContent = state.ban
@@ -991,8 +1029,10 @@ async function finish(won) {
       // "A" shortest route, not "the": ties are common in a graph this dense
       // and we return whichever the bidirectional search met on.
       $('route').innerHTML = routeHtml(p.path, state.trail);
-      $('routelbl').textContent = `A shortest route (${p.clicks} clicks)`;
+      $('routetxt').textContent = `A shortest route (${p.clicks} clicks)`;
       state.best = p.path;
+      // Only offer the replay when the route can actually be drawn.
+      if (p.path.filter(a => a.x != null).length > 1) $('replay').style.display = '';
       draw();
     } else $('route').innerHTML = '<div class="empty">no route exists</div>';
   } catch { $('route').innerHTML=''; }
@@ -1224,6 +1264,14 @@ $('copylink').onclick = () => copyText(state.url || location.href, $('copylink')
 /* ---------------- controls ---------------- */
 // .catch(()=>{}): startRace already rendered the message into the link list,
 // and an unhandled rejection here would only spam the console.
+$('topic').addEventListener('change', () => { $('tgo').disabled = !$('topic').value; });
+$('tgo').onclick = () => {
+  const c = $('topic').value;
+  if (c === '') return;
+  startRace('/api/puzzle', `region=${c}&difficulty=medium`)
+    .catch(e => { $('cerr').textContent = e.message; });
+};
+
 $('new').onclick   = () => startRace('/api/puzzle').catch(()=>{});
 $('again').onclick = () => startRace('/api/puzzle').catch(()=>{});
 $('daily').onclick = () => startRace('/api/daily').catch(()=>{});
@@ -1280,6 +1328,14 @@ $('post').onclick = async () => {
 };
 
 $('share').onclick = () => copyText(state.share, $('share'), 'Copy result');
+
+// Replay the optimal route on the map: frame it, then let draw() animate.
+$('replay').onclick = () => {
+  const best = (state.best || []).filter(a => a.x != null);
+  if (best.length < 2) return;
+  fitTo(best);
+  state.replay = { t0: performance.now() + 350 }; // let the camera settle first
+};
 
 /* ---------------- pick your own race ---------------- */
 // Two independent pickers. Each keeps the chosen id on the input element so
@@ -1403,6 +1459,17 @@ window.addEventListener('keydown', e => {
     `${META.articles.toLocaleString()} articles · ${META.edges.toLocaleString()} links`;
   if (META.has_map) {
     [MAP, LAND] = await Promise.all([api('/api/map?n=45000'), api('/api/landmarks?n=45')]);
+    // Topic races draw from the biggest regions — the landmark list is
+    // already exactly that, ordered by member count.
+    const seen = new Set();
+    for (const l of LAND) {
+      if (l.c == null || seen.has(l.c)) continue;
+      seen.add(l.c);
+      const o = document.createElement('option');
+      o.value = l.c;
+      o.textContent = regionName(l.c);
+      $('topic').appendChild(o);
+    }
   } else { $('nomap').style.display='grid'; $('legend').style.display='none'; }
   resize(); requestAnimationFrame(frame);
   describeHubs();

@@ -78,6 +78,8 @@ struct App {
     trust_proxy: bool,
     identity: Identity,
     secure_cookies: bool,
+    /// Usage counters, flushed hourly to analytics.jsonl in the state dir.
+    analytics: Analytics,
     /// Distance-to-goal maps, keyed by goal. One is ~7 MB at enwiki scale and
     /// costs a full reverse BFS, so they are kept rather than recomputed —
     /// and everyone racing the daily shares a single entry.
@@ -94,6 +96,88 @@ const COMPASS_DEPTH: u8 = 6;
 /// The player id resolved from a request's cookie, attached by middleware.
 #[derive(Clone)]
 struct Player(String);
+
+/// Best-effort usage counters — the number you need to know before deciding
+/// whether hosting is worth paying for. One JSON line per hour is appended to
+/// <state>/analytics.jsonl with the deltas since the previous line, plus the
+/// count of distinct client IPs seen so far that UTC day (hashed before
+/// storing; the raw address is never kept). Lost lines on a crash are
+/// accepted — this is capacity planning, not accounting.
+#[derive(Default)]
+struct Analytics {
+    pages: std::sync::atomic::AtomicU64,
+    searches: std::sync::atomic::AtomicU64,
+    articles: std::sync::atomic::AtomicU64,
+    puzzles: std::sync::atomic::AtomicU64,
+    submits: std::sync::atomic::AtomicU64,
+    compass: std::sync::atomic::AtomicU64,
+    other: std::sync::atomic::AtomicU64,
+    /// (unix day number, hashed IPs seen that day)
+    uniques: Mutex<(u64, std::collections::HashSet<u64>)>,
+}
+
+impl Analytics {
+    fn hit(&self, path: &str, ip: IpAddr) {
+        use std::sync::atomic::Ordering::Relaxed;
+        match path {
+            "/" => &self.pages,
+            "/api/search" => &self.searches,
+            p if p.starts_with("/api/article/") => &self.articles,
+            "/api/puzzle" | "/api/daily" => &self.puzzles,
+            "/api/submit" => &self.submits,
+            "/api/compass" => &self.compass,
+            _ => &self.other,
+        }
+        .fetch_add(1, Relaxed);
+
+        let day = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() / 86_400)
+            .unwrap_or(0);
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&ip, &mut h);
+        let mut u = self.uniques.lock().unwrap();
+        if u.0 != day {
+            *u = (day, Default::default());
+        }
+        u.1.insert(std::hash::Hasher::finish(&h));
+    }
+
+    /// Snapshot-and-reset the counters; uniques stay (they are a running
+    /// per-day count, not a delta).
+    fn flush_line(&self) -> Option<String> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let take = |a: &std::sync::atomic::AtomicU64| a.swap(0, Relaxed);
+        let (pages, searches, articles, puzzles, submits, compass, other) = (
+            take(&self.pages),
+            take(&self.searches),
+            take(&self.articles),
+            take(&self.puzzles),
+            take(&self.submits),
+            take(&self.compass),
+            take(&self.other),
+        );
+        let (day, n_unique) = {
+            let u = self.uniques.lock().unwrap();
+            (u.0, u.1.len())
+        };
+        if pages + searches + articles + puzzles + submits + compass + other == 0 {
+            return None;
+        }
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Some(
+            serde_json::json!({
+                "ts": ts, "day": day, "pages": pages, "searches": searches,
+                "articles": articles, "puzzles": puzzles, "submits": submits,
+                "compass": compass, "other": other, "uniques_today": n_unique,
+            })
+            .to_string(),
+        )
+    }
+}
 
 impl App {
     fn with_finder<T>(&self, f: impl FnOnce(&Game, &mut PathFinder) -> T) -> T {
@@ -185,6 +269,11 @@ async fn rate_limit(
             | "/api/routes"
     );
     let ok = if heavy { app.rl_heavy.allow(ip) } else { app.rl_read.allow(ip) };
+    if ok {
+        // Count what was served, not what was throttled — the question these
+        // counters answer is "how much real use is there".
+        app.analytics.hit(&path, ip);
+    }
     if !ok {
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -594,6 +683,35 @@ async fn puzzle(
         };
     }
 
+    // A topic race: both endpoints from one map region. Uses the layout's
+    // communities, so it needs nodes.parquet — absent that, the error says
+    // so instead of pretending the region is empty.
+    if let Some(region) = q.get("region").and_then(|v| v.parse::<i32>().ok()) {
+        if s.game.layout.is_none() {
+            return err("topic races need the map data (nodes.parquet)").into_response();
+        }
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(1);
+        let label = format!("topic-{}", name);
+        let out = tokio::task::spawn_blocking(move || {
+            s.with_finder(|g, pf| {
+                let mut rng = Rng::new(seed);
+                g.puzzle_in_region(pf, region, d, &mut rng)
+            })
+            .map(|p| issue(&s, p, label, None))
+        })
+        .await;
+        return match out {
+            Ok(Some(p)) => Json(p).into_response(),
+            Ok(None) => {
+                err("that region has no qualifying race at this difficulty").into_response()
+            }
+            Err(_) => err("puzzle generation failed").into_response(),
+        };
+    }
+
     // An explicit seed makes a puzzle reproducible, which is what a shared
     // daily challenge needs: same seed, same race, for everyone.
     let seed = q
@@ -985,7 +1103,34 @@ async fn serve() -> Result<()> {
         identity: Identity::load_or_create(&state_dir)?,
         secure_cookies: args.secure_cookies,
         compass: Mutex::new(Vec::new()),
+        analytics: Analytics::default(),
     });
+
+    // Hourly usage line. Append-only, best-effort: an unwritable file is
+    // reported once and the game keeps serving — analytics must never be the
+    // reason the site is down.
+    {
+        let app = state.clone();
+        let path = state_dir.join("analytics.jsonl");
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+            tick.tick().await; // the first tick fires immediately; skip it
+            loop {
+                tick.tick().await;
+                if let Some(line) = app.analytics.flush_line() {
+                    use std::io::Write;
+                    let r = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                        .and_then(|mut f| writeln!(f, "{line}"));
+                    if let Err(e) = r {
+                        eprintln!("analytics: cannot write {}: {e}", path.display());
+                    }
+                }
+            }
+        });
+    }
 
     let app = Router::new()
         .route("/", get(index))
@@ -1027,6 +1172,42 @@ async fn serve() -> Result<()> {
 }
 
 #[cfg(test)]
+mod analytics_tests {
+    use super::Analytics;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn counters_classify_flush_and_reset() {
+        let a = Analytics::default();
+        let ip = |n| IpAddr::V4(Ipv4Addr::new(10, 0, 0, n));
+        a.hit("/", ip(1));
+        a.hit("/api/search", ip(1));
+        a.hit("/api/article/42", ip(2));
+        a.hit("/api/puzzle", ip(2));
+        a.hit("/api/daily", ip(3));
+        a.hit("/api/map", ip(3)); // -> other
+
+        let line = a.flush_line().expect("counters were nonzero");
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["pages"], 1);
+        assert_eq!(v["searches"], 1);
+        assert_eq!(v["articles"], 1);
+        assert_eq!(v["puzzles"], 2);
+        assert_eq!(v["other"], 1);
+        assert_eq!(v["uniques_today"], 3);
+
+        // Deltas reset on flush; a quiet hour writes nothing at all.
+        assert!(a.flush_line().is_none());
+        // Uniques are a running per-day count, so the same IP again still
+        // yields one line (a hit happened) but no new unique.
+        a.hit("/", ip(1));
+        let v: serde_json::Value =
+            serde_json::from_str(&a.flush_line().unwrap()).unwrap();
+        assert_eq!(v["uniques_today"], 3);
+    }
+}
+
+#[cfg(test)]
 mod page_tests {
     /// The UI is embedded at compile time, so a bad edit to static/index.html
     /// cannot fail the build — it ships, and the page silently loses features.
@@ -1062,6 +1243,11 @@ mod page_tests {
             "function linkRow",
             "$('lgroup').addEventListener",
             "/api/regions",
+            "$('replay').onclick",
+            "$('tgo').onclick",
+            "function reissueRun",
+            "async function apiRun",
+            "wr-streak",
             "id=\"fromherebox\"",
             "$('helpclose').onclick",
             "async function loadBoard",
