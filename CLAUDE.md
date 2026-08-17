@@ -54,6 +54,12 @@ python python/09_pageviews.py                  # joins external pageview counts
 cargo build --release --bin serve
 ./target/release/serve --data data --state <writable-dir> --host 127.0.0.1 --port 8080
 
+# Puzzle pools: PC job, ~2 h at enwiki scale (measured 32 min on Simple English, 8 laptop threads), once per dump. Optional —
+# without data/pools.parquet the server rejection-samples as before; WITH a
+# stale one (different dump) it refuses to start, by design.
+cargo build --release --bin pools
+./target/release/pools --data data
+
 docker-compose up -d    # viewer only, on :5006
 docker compose -f docker-compose.game.yml up -d         # game behind Traefik (.env: RACE_HOST etc.)
 docker compose -f docker-compose.game.direct.yml up -d  # game on a bare host port

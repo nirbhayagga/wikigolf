@@ -251,6 +251,10 @@ struct Meta {
     articles: usize,
     edges: usize,
     has_map: bool,
+    /// Whether puzzle draws come from the precomputed pools (pools.parquet)
+    /// rather than rejection sampling — i.e. whether par-5+ races and the
+    /// route-count difficulty split are available.
+    pools: bool,
     bounds: Option<[f32; 4]>,
 }
 
@@ -431,6 +435,7 @@ async fn meta(State(s): State<Shared>) -> Json<Meta> {
         articles: s.game.graph.len(),
         edges: s.game.graph.forward.edges(),
         has_map: s.game.layout.is_some(),
+        pools: s.game.has_pools(),
         bounds,
     })
 }

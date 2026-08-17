@@ -62,14 +62,17 @@ services:
       # wifi or a public IP it is a decision, not a default.
       - "${BIND:-0.0.0.0}:${PORT:-8080}:8080"
 
-    # Loading 231.7M edges into CSR needs ~4 GB and about a minute; measured at
-    # 3.79 GB resident once up. The limit cannot protect a host with less RAM
-    # than the limit — the kernel OOM killer takes the process first, and it
-    # presents as an unexplained restart loop rather than an error.
+    # MEASURED at HEAD on the full enwiki set: 5.75 GB peak during load,
+    # ~5.2 GB settled (grew from 3.79 GB when categories, aliases, sizes and
+    # the search index moved into memory). Keep ~2 GB of headroom — a limit
+    # below the peak kills the container mid-load with nothing in its logs.
+    # The limit cannot protect a host with less RAM than the limit — the
+    # kernel OOM killer takes the process first, and it presents as an
+    # unexplained restart loop rather than an error.
     deploy:
       resources:
         limits:
-          memory: 6g
+          memory: 8g
 
 volumes:
   state:
