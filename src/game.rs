@@ -1276,18 +1276,45 @@ fn derive_region_names(
         }
     }
 
-    tally
+    // A category can be common without being descriptive. "Living people"
+    // is the most common category on all of Wikipedia, so every people-heavy
+    // region elects it — the shipped map once showed four regions in a row
+    // all named "Living people". Birth/death years are the same trap.
+    let vacuous = |name: &str| {
+        name == "Living people"
+            || ((name.ends_with(" births") || name.ends_with(" deaths"))
+                && name.chars().take_while(|c| c.is_ascii_digit()).count() >= 3)
+    };
+
+    // Names must also be unique across regions: bigger regions pick first,
+    // and a region whose favourite is taken falls to its next candidate —
+    // the runner-up category is a better name than a duplicate of someone
+    // else's.
+    let mut ranked: Vec<(i32, usize, Vec<(&str, u32)>)> = tally
         .into_iter()
-        .filter_map(|(c, counts)| {
-            counts
+        .map(|(c, counts)| {
+            let mut cands: Vec<(&str, u32)> = counts
                 .into_iter()
                 // A category shared by two articles is a coincidence, not a
                 // region's identity.
-                .filter(|&(_, n)| n >= 3)
-                .max_by_key(|&(_, n)| n)
-                .map(|(name, _)| (c, name.to_string()))
+                .filter(|&(name, n)| n >= 3 && !vacuous(name))
+                .collect();
+            cands.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            cands.truncate(12);
+            (c, *seen.get(&c).unwrap_or(&0), cands)
         })
-        .collect()
+        .collect();
+    ranked.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+    let mut used: std::collections::HashSet<&str> = Default::default();
+    let mut out = HashMap::new();
+    for (c, _, cands) in &ranked {
+        if let Some((name, _)) = cands.iter().find(|(name, _)| !used.contains(name)) {
+            used.insert(name);
+            out.insert(*c, name.to_string());
+        }
+    }
+    out
 }
 
 #[cfg(test)]
