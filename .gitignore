@@ -40,3 +40,7 @@ cufile.log
 # every `git pull` conflicts; put deployment-specific deviations here instead
 # and pass both files with -f. See the header of docker-compose.game.yml.
 /compose.local.yml
+
+# The static exporter's output tree — ~8 GB of generated files at enwiki
+# scale; deployed with wrangler, never committed.
+/static_site/
