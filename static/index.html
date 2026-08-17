@@ -137,10 +137,13 @@
   .brand { display:flex; align-items:baseline; gap:9px; margin-bottom:12px; }
   .brand h1 { margin:0; font-size:15px; letter-spacing:2.2px; font-weight:700; }
   .brand span { color:var(--faint); font-size:11px; font-family:var(--mono); }
-  .pickers { align-items:center; gap:10px; margin-top:6px; }
-  .pickers label { display:flex; align-items:center; gap:5px; }
-  .pickers select, .pickers input { padding:3px 6px; font-size:12px; max-width:70px; }
-  #dnum { width:52px; }
+  .pickers { align-items:center; gap:8px; margin-top:6px; flex-wrap:wrap; }
+  .pgroup { display:flex; align-items:center; gap:5px; padding:2px 7px;
+            border:1px solid var(--line); border-radius:9px; }
+  .picon { font-size:11px; color:var(--faint); }
+  .pickers select, .pickers input { padding:3px 5px; font-size:12px;
+            border:none; background:transparent; color:var(--text); }
+  #dnum { width:56px; }
   .credits { margin-top:8px; font-size:10px; color:var(--faint); text-align:center; }
   .credits a { color:var(--faint); }
   .row { display:flex; gap:7px; }
@@ -460,26 +463,29 @@
       <button id="daily" style="flex:1">&#9733; Daily</button>
       <button id="round" style="flex:1" title="A scored course of holes — one card at the end">&#9971; Round</button>
     </div>
-    <!-- The pickers live under the buttons, not beside them: six controls in
-         one flex row collapsed on a 360px phone and squeezed the difficulty
-         select out of existence. -->
+    <!-- The pickers live under the buttons, each carrying its mode's icon so
+         the tie is visible: ★ settings belong to Daily, ⛳ to Round, and the
+         replay box says outright that it works with either button. -->
     <div class="row pickers">
-      <label class="lbl2">daily
-        <select id="ddiff" title="Daily difficulty" aria-label="Daily difficulty">
-          <option value="medium" selected>med</option>
+      <span class="pgroup" title="Applies to the ★ Daily button">
+        <span class="picon">&#9733;</span>
+        <select id="ddiff" aria-label="Daily difficulty">
+          <option value="medium" selected>medium</option>
           <option value="easy">easy</option>
           <option value="hard">hard</option>
         </select>
-      </label>
-      <label class="lbl2">round
-        <select id="rholes" title="Holes per round" aria-label="Holes per round">
-          <option value="3" selected>3</option>
-          <option value="9">9</option>
+      </span>
+      <span class="pgroup" title="Applies to the ⛳ Round button">
+        <span class="picon">&#9971;</span>
+        <select id="rholes" aria-label="Holes per round">
+          <option value="3" selected>3 holes</option>
+          <option value="9">9 holes</option>
         </select>
-      </label>
-      <label class="lbl2">replay
-        <input id="dnum" placeholder="#" title="Play a past daily or round by number (archive plays don't advance streaks)">
-      </label>
+      </span>
+      <span class="pgroup" title="With a number here, ★ Daily or ⛳ Round replays that past puzzle instead of today's. Archive plays don't advance streaks.">
+        <span class="lbl2">replay&nbsp;#</span>
+        <input id="dnum" placeholder="today" aria-label="Replay a past daily or round by number">
+      </span>
     </div>
 
     <div id="hubctl">
