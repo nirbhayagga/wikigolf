@@ -323,6 +323,19 @@ struct ArticleRef {
     /// link. Absent until 09_pageviews.py has produced pageviews.parquet.
     #[serde(skip_serializing_if = "Option::is_none")]
     views: Option<u32>,
+    /// {{Short description}} — the context line a bare link list lacks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    desc: Option<String>,
+    /// First infobox kind ("person", "film"), for the type glyph.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    /// Editor-vetted quality ({{Featured article}} / {{Good article}}).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    featured: bool,
+    /// A fork, not a destination. Excluded from generated endpoints; tagged
+    /// in the link list so the player knows what they are clicking into.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    disambig: bool,
 }
 
 fn article_ref(g: &Game, id: u32) -> ArticleRef {
@@ -344,6 +357,16 @@ fn article_ref_banned(g: &Game, id: u32, banned: bool) -> ArticleRef {
         in_degree: g.graph.reverse.degree(id),
         banned,
         views: g.views.get(id as usize).copied(),
+        desc: g.descs.get(id).first().cloned(),
+        kind: g.kinds.get(id).first().cloned(),
+        featured: g
+            .flags
+            .get(id as usize)
+            .is_some_and(|f| f & (wiki_parser::extras::FLAG_FEATURED | wiki_parser::extras::FLAG_GOOD) != 0),
+        disambig: g
+            .flags
+            .get(id as usize)
+            .is_some_and(|f| f & wiki_parser::extras::FLAG_DISAMBIG != 0),
     }
 }
 

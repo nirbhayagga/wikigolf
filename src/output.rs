@@ -193,14 +193,20 @@ impl CategoryWriter {
 /// "how substantial is this article" signal available, since the dump hands
 /// it over for free while the text is already in memory.
 pub fn write_sizes(path: &Path, sizes: &[u32]) -> Result<u64> {
+    write_dense_u32(path, "bytes", sizes)
+}
+
+/// One u32 per article, dense in id order: sizes, flags — same shape, same
+/// "position is the id" contract phase 3 relies on everywhere else.
+pub fn write_dense_u32(path: &Path, val_col: &str, vals: &[u32]) -> Result<u64> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::UInt32, false),
-        Field::new("bytes", DataType::UInt32, false),
+        Field::new(val_col, DataType::UInt32, false),
     ]));
     let mut writer = ArrowWriter::try_new(File::create(path)?, schema.clone(), Some(props()?))?;
     // Ids continue across chunks; restarting them at zero per batch would
-    // silently give every article after the first batch the wrong size.
-    for (i, chunk) in sizes.chunks(BATCH_ROWS).enumerate() {
+    // silently give every article after the first batch the wrong value.
+    for (i, chunk) in vals.chunks(BATCH_ROWS).enumerate() {
         let base = (i * BATCH_ROWS) as u32;
         writer.write(&RecordBatch::try_new(
             schema.clone(),
@@ -213,5 +219,28 @@ pub fn write_sizes(path: &Path, sizes: &[u32]) -> Result<u64> {
         )?)?;
     }
     writer.close()?;
-    Ok(sizes.len() as u64)
+    Ok(vals.len() as u64)
+}
+
+/// Sparse (id, lat, lon) rows for articles carrying a {{coord}}.
+pub fn write_coords(path: &Path, rows: &[(u32, f32, f32)]) -> Result<u64> {
+    use arrow::array::Float32Array;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::UInt32, false),
+        Field::new("lat", DataType::Float32, false),
+        Field::new("lon", DataType::Float32, false),
+    ]));
+    let mut writer = ArrowWriter::try_new(File::create(path)?, schema.clone(), Some(props()?))?;
+    for chunk in rows.chunks(BATCH_ROWS) {
+        writer.write(&RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(chunk.iter().map(|r| r.0))),
+                Arc::new(Float32Array::from_iter_values(chunk.iter().map(|r| r.1))),
+                Arc::new(Float32Array::from_iter_values(chunk.iter().map(|r| r.2))),
+            ],
+        )?)?;
+    }
+    writer.close()?;
+    Ok(rows.len() as u64)
 }

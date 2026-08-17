@@ -38,6 +38,7 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 | `dump.rs` | 266 | Streaming MediaWiki XML reader. Buffers are reused across pages, so memory is O(largest article), not O(dump). |
 | `index.rs` | 282 | **Pass 1.** Every ns=0 page gets a raw id; redirect chains are resolved (max 4 hops, cycle-safe); only real articles get a dense `article_id`. |
 | `edges.rs` | 363 | **Pass 2.** Normalize each link, resolve through redirects, drop red links. Also collects categories and article sizes. |
+| `extras.rs` | ~400 | The v3 template extractions from raw wikitext: {{Short description}}, disambiguation flags, first infobox kind, {{coord}} (preferring display=title), featured/good flags. Heuristic by design; absence degrades to pre-v3 behaviour. |
 | `titles.rs` | 215 | Title normalization — MediaWiki's own rules. Decides whether two link strings are the same article. Also category extraction and maintenance-category filtering. |
 | `wikitext.rs` | 318 | Comment/nowiki/ref/template stripping and `[[wikilink]]` extraction. Every removal is behind a flag. |
 | `output.rs` | 217 | Parquet writers. The parser emits final artifacts directly, so nothing downstream re-reads a multi-GB CSV. |
@@ -100,7 +101,7 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 | `/api/meta` | 17 ms | Article and edge counts, map bounds, whether pools and pageviews are loaded. |
 | `/api/regions` | free | Region names, from categories or the LLM file. |
 | `/api/map` | 15 ms | 45k points, 1.72 MB (~a third gzipped), ETag so repeats are free. |
-| `/api/article/{id}` | 3.7 ms | Links with their categories, plus aliases and byte size. |
+| `/api/article/{id}` | 3.7 ms | Links with categories, short description, infobox kind, disambig/featured flags, read count, aliases and byte size — each field absent until its data file exists. |
 | `/api/search` | sub-ms typical | Prebuilt index over titles AND redirect aliases ("NYC" finds New York City), deduped to the best entry per article. Worst case (no match) is still a full pass, but allocation-free. |
 | `/api/path` | 22 ms | Bidirectional BFS. |
 | `/api/puzzle` | 41 ms | Also accepts `from`/`to` (ids) or `from_title`/`to_title`. |
@@ -136,9 +137,14 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 | `categories.parquet` | 258.6 MB | `article_id`, `category`. 28.1M rows (~3.9/article), maintenance filtered. |
 | `article_sizes.parquet` | 36.6 MB | `id`, `bytes`. One u32 per article. |
 
-*The last two come from the v2 re-parse (commit `3827ef5` or later), which reproduced
-`titles.parquet` and `edges.parquet` byte-for-byte — the parse is deterministic, so
-ids are stable across re-parses of the same dump.*
+| `short_descriptions.parquet` | sparse | `id`, `description` — {{Short description}} gloss (v3; rare on Simple English, most articles on enwiki). |
+| `infobox_types.parquet` | sparse | `id`, `kind` — first infobox name ("person", "film"); 46% coverage on Simple English. |
+| `article_flags.parquet` | dense | `id`, `flags` bitmask — 1 disambig, 2 featured, 4 good. Disambig pages are auto-excluded from generated race endpoints and from the pools. |
+| `coords.parquet` | sparse | `id`, `lat`, `lon` from {{coord}} — visualizer/content material, not served by the game. |
+
+*Categories, sizes and the v3 files all come from re-parses that reproduce
+`titles.parquet` and `edges.parquet` byte-for-byte — the parse is deterministic,
+so ids are stable across re-parses of the same dump.*
 
 ### Pipeline caches and outputs
 

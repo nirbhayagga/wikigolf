@@ -17,7 +17,7 @@ use std::time::Instant;
 use anyhow::Result;
 use clap::Parser;
 
-use wiki_parser::game::{load_endpoint_deny, playable_pool, Difficulty};
+use wiki_parser::game::{load_article_flags, load_endpoint_deny, playable_pool, Difficulty};
 use wiki_parser::graph::Graph;
 use wiki_parser::pools::{self, Pools, POOL_FILE};
 
@@ -67,9 +67,10 @@ fn main() -> Result<()> {
         t0.elapsed()
     );
 
-    // Same curation the server applies, so a denied endpoint cannot hide in
-    // the precomputed pairs either.
-    let playable = playable_pool(&graph, &load_endpoint_deny(&a.data, &graph));
+    // Same curation the server applies — manual deny list plus the disambig
+    // flag — so an excluded endpoint cannot hide in the precomputed pairs.
+    let flags = load_article_flags(&a.data, graph.len())?;
+    let playable = playable_pool(&graph, &load_endpoint_deny(&a.data, &graph), &flags);
     let mut out_pools = Pools::empty();
 
     for d in [Difficulty::Easy, Difficulty::Medium, Difficulty::Hard] {

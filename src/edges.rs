@@ -36,6 +36,20 @@ pub struct Pass2Stats {
 /// output several times over for labels nobody reads.
 const MAX_CATEGORIES_PER_ARTICLE: usize = 6;
 
+/// The v3 template extractions, gathered in the same pass as everything
+/// else — nothing is worth a second traversal of a 27 GB dump.
+#[derive(Default)]
+pub struct ExtrasOut {
+    /// Sparse (id, one-line gloss) from {{Short description}}.
+    pub descs: Vec<(u32, String)>,
+    /// Sparse (id, infobox kind), e.g. "person", "film".
+    pub kinds: Vec<(u32, String)>,
+    /// Dense per-article bitmask: see extras::FLAG_*.
+    pub flags: Vec<u32>,
+    /// Sparse (id, lat, lon) from {{coord}}.
+    pub coords: Vec<(u32, f32, f32)>,
+}
+
 pub fn build<R: BufRead>(
     input: R,
     idx: &TitleIndex,
@@ -43,12 +57,13 @@ pub fn build<R: BufRead>(
     opts: &CleanOpts,
     out_path: &Path,
     cats_path: &Path,
-) -> Result<(Pass2Stats, Vec<u32>)> {
+) -> Result<(Pass2Stats, Vec<u32>, ExtrasOut)> {
     let mut writer = EdgeWriter::create(out_path)?;
     let mut cats = CategoryWriter::create(cats_path)?;
     // Wikitext byte length per article, indexed by dense id. The dump hands it
     // over for free while the text is already in memory.
     let mut sizes = vec![0u32; idx.n_articles as usize];
+    let mut extras = ExtrasOut { flags: vec![0u32; idx.n_articles as usize], ..Default::default() };
     let mut page_cats: Vec<String> = Vec::with_capacity(16);
     let mut cleaner = Cleaner::new();
     let mut targets: Vec<u32> = Vec::with_capacity(4096);
@@ -82,6 +97,20 @@ pub fn build<R: BufRead>(
         targets.clear();
         page_cats.clear();
         sizes[src as usize] = p.text.len().min(u32::MAX as usize) as u32;
+
+        // Template-borne metadata, from the same raw text and for the same
+        // reason as categories: cleaning would truncate it away.
+        let ex = crate::extras::extract(&p.text, &title);
+        if let Some(d) = ex.description {
+            extras.descs.push((src, d));
+        }
+        if let Some(k) = ex.kind {
+            extras.kinds.push((src, k));
+        }
+        extras.flags[src as usize] = ex.flags;
+        if let Some((lat, lon)) = ex.coord {
+            extras.coords.push((src, lat, lon));
+        }
 
         // Categories come from the RAW wikitext, not the cleaned text.
         //
@@ -153,7 +182,7 @@ pub fn build<R: BufRead>(
     progress.done(st.pages_scanned);
     st.edges_written = writer.finish()?;
     st.categories_written = cats.finish()?;
-    Ok((st, sizes))
+    Ok((st, sizes, extras))
 }
 
 #[cfg(test)]
@@ -194,7 +223,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("edges-{seq}.parquet"));
         let cpath = dir.join(format!("cats-{seq}.parquet"));
-        let (st, _sizes) =
+        let (st, _sizes, _extras) =
             build(Cursor::new(XML), &idx, &ns, &opts, &path, &cpath).unwrap();
         let edges = read_back(&path);
         std::fs::remove_file(&path).ok();
@@ -212,7 +241,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("edges-{seq}.parquet"));
         let cpath = dir.join(format!("cats-{seq}.parquet"));
-        let (st, sizes) =
+        let (st, sizes, _extras) =
             build(Cursor::new(XML), &idx, &ns, &opts, &path, &cpath).unwrap();
 
         use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
