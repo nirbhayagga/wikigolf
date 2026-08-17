@@ -1009,8 +1009,12 @@ async function finish(won) {
   updateCompass();
   const clicks = state.trail.length-1, par = state.par;
 
-  $('verdict').textContent = !won ? 'Gave up'
-    : clicks===par ? 'Optimal!' : clicks<=par+1 ? 'Nice.' : 'Made it.';
+  // Golf terms, because the game is golf. Par is the optimal route, so
+  // under-par cannot exist — matching it is the perfect score, and every
+  // click past it is a stroke.
+  const golf = clicks===par ? 'Par ⛳' : clicks===par+1 ? 'Bogey'
+    : clicks===par+2 ? 'Double bogey' : `+${clicks-par} over par`;
+  $('verdict').textContent = !won ? 'Gave up' : golf;
   $('score').innerHTML = won
     ? `<b>${clicks}</b> clicks &nbsp;·&nbsp; par <b>${par}</b> &nbsp;·&nbsp; <b>${mmss(state.elapsed)}</b>`
     : `par was <b>${par}</b>`;
@@ -1037,7 +1041,7 @@ async function finish(won) {
   $('squares').textContent = won ? sq.join('') : '';
   state.share = (state.number?`WikiGolf #${state.number}`:'WikiGolf')+
     ` (${state.difficulty})`+(streak>1?` · 🔥${streak}-day streak`:'')+`\n`+
-    (won ? `${clicks} clicks · par ${par} · ${mmss(state.elapsed)}\n${sq.join('')}` : `gave up · par ${par}`)+
+    (won ? `${golf} — ${clicks} clicks, par ${par} · ${mmss(state.elapsed)}\n${sq.join('')}` : `gave up · par ${par}`)+
     (state.url ? `\n${state.url}` : '');
 
   // Only a completed run can be submitted, and only the server decides
