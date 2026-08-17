@@ -59,6 +59,8 @@ The Rust parser has unit + fixture tests (`cargo test`). The Python pipeline has
 | `titles.parquet` | `id` (dense 0..N-1), `title` — real articles only |
 | `redirects.parquet` | `alias`, `article_id` — for search-by-alias later |
 | `edges.parquet` | `src`, `dst` int32, deduped, no self-loops |
+| `categories.parquet` | `article_id`, `category` — from raw text (cleaned text truncates at citation sections), maintenance cats filtered |
+| `article_sizes.parquet` | `id`, `bytes` — raw wikitext length per article |
 
 There is **no `edges.csv` and no string→integer mapping phase** — that work moved into the parser, which is why the pipeline no longer needs 128 GB of RAM. `nodes.parquet` (`vertex` title, `x`, `y`, `community`, `pagerank`, `degree`) remains the contract for scripts 02–06.
 
@@ -68,7 +70,7 @@ There is **no `edges.csv` and no string→integer mapping phase** — that work 
 
 Verified end-to-end on Simple English Wikipedia: parser ~110 s, pipeline 60 s, 283,997 nodes / 3,940,103 edges.
 
-**Full English Wikipedia (20260801) is parsed:** 7,219,290 articles / 231,681,569 edges, 46.4 min, 3.10 GB peak RSS. The old pipeline's 28M vertices / 482M edges are gone. Outputs total ~1.05 GB, so copy the Parquet between machines, never the 26.67 GB dump.
+**Full English Wikipedia (20260801) is parsed:** 7,219,290 articles / 231,681,569 edges, 46.4 min, 3.10 GB peak RSS. The old pipeline's 28M vertices / 482M edges are gone. Outputs total ~1.6 GB with categories and sizes, so copy the Parquet between machines, never the 26.67 GB dump. The re-parse for categories reproduced `titles.parquet` and `edges.parquet` byte-for-byte: parsing is deterministic, ids are stable for the same dump.
 
 **Phase 2 has run at full scale.** Symmetrization gives 419,049,910 edges in 26 s. A 10% backbone is 721,929 nodes / 83,399,460 induced edges (19.9% of all). What is still unproven is a *full* (`backbone_frac: 0`) layout, and whether either produces a map with real structure — see the density note below.
 

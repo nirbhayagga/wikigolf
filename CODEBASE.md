@@ -131,10 +131,12 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 | `titles.parquet` | 96.6 MB | `id` (dense 0..N-1), `title`. Real articles only. |
 | `redirects.parquet` | 156.6 MB | `article_id`, `alias`. 12M aliases. |
 | `edges.parquet` | 803.0 MB | `src`, `dst` int32. Deduped, no self-loops. |
-| `categories.parquet` | *new* | `article_id`, `category`. ≤6 per article, maintenance filtered. |
-| `article_sizes.parquet` | *new* | `id`, `bytes`. One u32 per article, ~29 MB. |
+| `categories.parquet` | 258.6 MB | `article_id`, `category`. 28.1M rows (~3.9/article), maintenance filtered. |
+| `article_sizes.parquet` | 36.6 MB | `id`, `bytes`. One u32 per article. |
 
-*The last two exist only after a parse from commit `3827ef5` or later.*
+*The last two come from the v2 re-parse (commit `3827ef5` or later), which reproduced
+`titles.parquet` and `edges.parquet` byte-for-byte — the parse is deterministic, so
+ids are stable across re-parses of the same dump.*
 
 ### Pipeline caches and outputs
 
@@ -143,7 +145,7 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 | `cache_metrics.parquet` | 77.4 MB | PageRank + in-degree. Phase 1. |
 | `cache_sfdp_raw.npz` | **3.34 GB** | Raw SFDP positions. **The most expensive artifact in the project** — ten hours. |
 | `cache_layout.parquet` | 88.6 MB | Placed coordinates + community. Phase 2. |
-| `nodes.parquet` | 206.7 MB | `vertex`, `x`, `y`, `community`, `pagerank`, `degree`. The contract for scripts 02–06 and the game's map. |
+| `nodes.parquet` | 206.7 MB | `vertex`, `x`, `y`, `community`, `pagerank`, `degree`. The contract for scripts 02–06 and the game's map. Canonical copy carries res-6 communities (2,970 distinct). |
 | `manifest.json` | 348 B | Input + config fingerprint. Refuses to mix caches from different inputs. |
 | `community_stats.json` | — | Per-community sizes and exemplars. |
 | `community_labels.json` | — | LLM region names. Optional; categories supersede it. |
@@ -153,9 +155,9 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 
 | File | What it is |
 |---|---|
+| `nodes.parquet` | Full layout, res-6 communities (2,970; 126 over 10k members). **The canonical map.** |
 | `nodes_backbone.parquet` | 10% core laid out, tail propagated. Superseded. |
-| `nodes_res1.parquet` | Full layout, 25 communities. Regions too coarse. |
-| `resrun/nodes.parquet` | Full layout, 126 communities. **The one to ship.** |
+| `resrun/nodes_res1.parquet` | Full layout, res-1 communities (2,760). Regions too coarse. |
 
 ### Runtime state — back this up
 

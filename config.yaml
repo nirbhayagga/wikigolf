@@ -37,7 +37,7 @@ layout:
 
 community:
   objective: "modularity"  # "modularity" or "CPM"
-  resolution: 1.0          # higher = more, smaller communities. The map's
+  resolution: 6.0          # higher = more, smaller communities. The map's
                            # granularity dial, on both the GPU and CPU paths.
                            # Measured on Simple English (283,997 articles):
                            #   res  communities>=1000  largest  top-24 coverage
@@ -49,6 +49,11 @@ community:
                            # or the excess communities all render as "Other".
                            # Community count also grows with graph size, so
                            # re-measure on enwiki rather than reusing these.
+                           # 6.0 is the shipped enwiki value (2,970 communities,
+                           # 126 over 10k members, largest 2.9%). It lives HERE,
+                           # tracked, because a `git reset --hard` once reverted
+                           # a working-tree edit of this dial and the next merge
+                           # silently produced the coarse res-1 map again.
   top_n: 20                # communities to send to the LLM for labelling
 
 gemini:
@@ -60,7 +65,7 @@ visualization:
   height: 800
   bgcolor: "black"
   title: "The Map of Wikipedia"
-  max_categories: 24       # Datashader's count_cat allocates one aggregate
+  max_categories: 96       # Datashader's count_cat allocates one aggregate
                            # plane per category: width * height * categories * 4
                            # bytes. At 1200x800 that is ~3.8 MB each, so 24 is
                            # ~92 MB. Everything past this folds into "Other".
@@ -68,6 +73,6 @@ visualization:
 export:
   width: 4096
   height: 2160
-  max_categories: 24       # At 4096x2160 each category costs ~35 MB:
+  max_categories: 96       # At 4096x2160 each category costs ~35 MB:
                            #   24 -> 0.85 GB    48 -> 1.7 GB    96 -> 3.4 GB
                            # Raise together with community.resolution.
