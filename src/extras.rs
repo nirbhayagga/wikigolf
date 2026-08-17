@@ -54,11 +54,14 @@ pub fn extract(text: &str, title: &str) -> Extras {
 
         // Template name: up to '|' or '}}', trimmed, ASCII-lowercased.
         // Non-ASCII template names exist but none of the five targets use
-        // them.
-        let name_end = rest
-            .find(|c| c == '|' || c == '}')
-            .unwrap_or(0)
-            .min(64);
+        // them. Over-long names are SKIPPED, never sliced: clamping a byte
+        // index at 64 once panicked 53 minutes into enwiki when an en-dash
+        // straddled exactly that byte — `find` returns char boundaries,
+        // arbitrary clamps do not.
+        let name_end = match rest.find(|c| c == '|' || c == '}') {
+            Some(e) if e > 0 && e <= 64 => e,
+            _ => continue,
+        };
         let name_raw = rest[..name_end].trim();
         if name_raw.is_empty() {
             continue;
@@ -263,5 +266,21 @@ mod tests {
         // A 100 KB name does not blow the scanner up.
         let long = format!("{{{{{}|x}}}}", "n".repeat(100_000));
         assert_eq!(extract(&long, "A"), Extras::default());
+    }
+
+    /// The enwiki crash, preserved: a multibyte char straddling byte 64 of a
+    /// template name panicked the old byte-index clamp. Any prefix length of
+    /// multibyte-heavy names must be safe.
+    #[test]
+    fn multibyte_never_panics_at_any_boundary() {
+        for pad in 0..70 {
+            let name = format!("{}–dash", "x".repeat(pad));
+            let text = format!("{{{{{name}|arg}}}} tail");
+            let _ = extract(&text, "A"); // must not panic, whatever it finds
+        }
+        // And fully multibyte names, straddling everywhere.
+        let geo = "სამხედრო".repeat(12);
+        let _ = extract(&format!("{{{{{geo}|x}}}}"), "A");
+        let _ = extract("{{coord|„40“|20}}", "A");
     }
 }
