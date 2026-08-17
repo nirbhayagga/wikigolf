@@ -551,6 +551,22 @@ let state = blank();
 const fmtViews = v => v >= 1e6 ? (v/1e6).toFixed(1)+'M'
   : v >= 1e3 ? Math.round(v/1e3)+'k' : String(v);
 
+/* Infobox kind -> a glyph. Prefix-matched, tiny on purpose: an icon for the
+   dozen common kinds beats a legend for four hundred rare ones. */
+const KIND_GLYPHS = [
+  ['person','\u{1F464}'], ['officeholder','\u{1F464}'], ['football biography','\u26BD'],
+  ['sportsperson','\u{1F3C5}'], ['musical artist','\u{1F3A4}'], ['film','\u{1F3AC}'],
+  ['television','\u{1F4FA}'], ['album','\u{1F4BF}'], ['song','\u{1F3B5}'],
+  ['book','\u{1F4D5}'], ['video game','\u{1F3AE}'], ['company','\u{1F3E2}'],
+  ['settlement','\u{1F3D9}'], ['country','\u{1F30D}'], ['school','\u{1F393}'],
+  ['university','\u{1F393}'], ['species','\u{1F9EC}'], ['taxobox','\u{1F9EC}'],
+];
+const kindGlyph = k => {
+  if (!k) return '';
+  for (const [p, g] of KIND_GLYPHS) if (k.startsWith(p)) return g + ' ';
+  return '';
+};
+
 async function api(p, o) {
   const r = await fetch(p, o);
   if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error || r.statusText);
@@ -828,7 +844,7 @@ async function go(id, isBack) {
     (d.bytes ? ` · ${d.bytes >= 1024 ? Math.round(d.bytes/1024)+' KB' : d.bytes+' B'}` : '') +
     // What people actually read — the fame signal players recognise.
     (d.views ? ` · ${fmtViews(d.views)} reads/mo` : '');
-  $('curcats').textContent = (d.cats || []).join(' · ');
+  $('curcats').textContent = d.desc || (d.cats || []).join(' · ');
   $('curalias').textContent = (d.aliases || []).length
     ? 'also: ' + d.aliases.join(', ') : '';
   $('clicks').textContent = clicks;
@@ -973,13 +989,15 @@ function linkRow(l) {
     if (l.banned) el.title = `Banned at this difficulty: ${l.in_degree.toLocaleString()} inbound links`;
     el.innerHTML =
       `<span class="dot" style="background:${l.banned?'var(--locked)':colorOf(l.community)}"></span>`+
-      `<span class="name">${esc(l.title)}` +
-        // The context a bare link list otherwise has none of. In a real
-        // article the surrounding sentence tells you what a link is; here the
-        // article's own categories do it in three words.
-        (detail && l.cats && l.cats.length
-          ? `<span class="cats">${esc(l.cats.slice(0,3).join(' · '))}</span>` : '') +
+      `<span class="name">${l.featured ? '\u2B50 ' : ''}${kindGlyph(l.kind)}${esc(l.title)}` +
+        // The context a bare link list otherwise has none of. The editor's
+        // own {{Short description}} beats categories when the v3 parse has
+        // run; categories are the fallback. One line either way — the noise
+        // budget does not grow.
+        (detail && (l.desc || (l.cats && l.cats.length))
+          ? `<span class="cats">${esc(l.desc || l.cats.slice(0,3).join(' · '))}</span>` : '') +
       `</span>`+
+      (l.disambig ? `<span class="tag">fork</span>` : '')+
       (l.banned ? `<span class="tag lock">&#128274; hub</span>` : '')+
       (state.dist && state.dist[l.id] !== undefined
         ? `<span class="tag ${state.dist[l.id] <= 1 ? 'near' : 'far'}">`+
@@ -1154,7 +1172,8 @@ async function startRace(endpoint, extra) {
       startId:p.start.id,
       number:p.number??null, difficulty:p.difficulty||diff, compass:p.compass??0 });
     $('goal').textContent = p.goal.title;
-    $('goalmeta').textContent = `${p.goal.in_degree.toLocaleString()} inbound links`
+    $('goalmeta').textContent = (p.goal.desc ? `${p.goal.desc} · ` : '')
+      + `${p.goal.in_degree.toLocaleString()} inbound links`
       + (p.goal.views ? ` · ${fmtViews(p.goal.views)} reads/mo` : '');
     $('par').textContent = p.optimal;
     $('time').textContent = '0:00';

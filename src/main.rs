@@ -199,7 +199,7 @@ fn main() -> Result<()> {
     let (reader2, child2) = open(&args.dump, &decompressor)?;
     let edges_path = args.out.join("edges.parquet");
     let cats_path = args.out.join("categories.parquet");
-    let (p2, sizes) = edges::build(reader2, &idx, &ns, &opts, &edges_path, &cats_path)?;
+    let (p2, sizes, extras) = edges::build(reader2, &idx, &ns, &opts, &edges_path, &cats_path)?;
     reap(child2)?;
 
     eprintln!("   pages scanned:      {:>12}", p2.pages_scanned);
@@ -247,6 +247,45 @@ fn main() -> Result<()> {
         n_sizes,
         median
     );
+
+    // ---- v3 extractions: template-borne metadata --------------------------
+    {
+        use wiki_parser::extras::{FLAG_DISAMBIG, FLAG_FEATURED, FLAG_GOOD};
+        let n_articles = idx.n_articles as u64;
+
+        let p = args.out.join("short_descriptions.parquet");
+        let n = output::write_titles(
+            &p,
+            "id",
+            "description",
+            extras.descs.iter().map(|(i, d)| (*i, d.as_str())),
+        )?;
+        eprintln!("   → {} ({} rows, {:.1}% of articles)", p.display(), n, pct(n, n_articles));
+
+        let p = args.out.join("infobox_types.parquet");
+        let n = output::write_titles(
+            &p,
+            "id",
+            "kind",
+            extras.kinds.iter().map(|(i, k)| (*i, k.as_str())),
+        )?;
+        eprintln!("   → {} ({} rows, {:.1}% of articles)", p.display(), n, pct(n, n_articles));
+
+        let p = args.out.join("article_flags.parquet");
+        output::write_dense_u32(&p, "flags", &extras.flags)?;
+        let count = |m: u32| extras.flags.iter().filter(|&&f| f & m != 0).count();
+        eprintln!(
+            "   → {} (disambig {}, featured {}, good {})",
+            p.display(),
+            count(FLAG_DISAMBIG),
+            count(FLAG_FEATURED),
+            count(FLAG_GOOD)
+        );
+
+        let p = args.out.join("coords.parquet");
+        let n = output::write_coords(&p, &extras.coords)?;
+        eprintln!("   → {} ({} rows)", p.display(), n);
+    }
 
     let secs = started.elapsed().as_secs_f64();
     eprintln!("\nGraph: {} nodes, {} edges", idx.n_articles, p2.edges_written);

@@ -10,6 +10,7 @@
 pub mod dump;
 pub mod edges;
 pub mod game;
+pub mod extras;
 pub mod graph;
 pub mod identity;
 pub mod ratelimit;

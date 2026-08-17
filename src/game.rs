@@ -280,6 +280,13 @@ fn search_ranked(
 /// handful of candidates.
 const PLAYABLE_POOL: usize = 50_000;
 
+/// Dense per-article extras::FLAG_* bitmask; empty when the parse predates
+/// the v3 extractions. Public because the pools generator applies the same
+/// disambiguation exclusion the server does.
+pub fn load_article_flags(data_dir: &Path, n: usize) -> Result<Vec<u32>> {
+    read_u32_column(&data_dir.join("article_flags.parquet"), n, "article_flags")
+}
+
 /// Editorial curation of race endpoints: `endpoint_deny.txt` in the data
 /// directory, one article title per line, `#` for comments. Titles resolve
 /// through the parser's own normalization and redirect map, so "USA" denies
@@ -325,9 +332,18 @@ pub fn load_endpoint_deny(data_dir: &Path, graph: &Graph) -> std::collections::H
 /// from a bare `Graph` — it must not go through `Game::load`, which refuses
 /// to start over a stale pools file, the very thing the generator exists to
 /// replace.
-pub fn playable_pool(graph: &Graph, deny: &std::collections::HashSet<u32>) -> Vec<u32> {
+pub fn playable_pool(
+    graph: &Graph,
+    deny: &std::collections::HashSet<u32>,
+    flags: &[u32],
+) -> Vec<u32> {
+    // A disambiguation page is a fork, not a destination — racing to one is
+    // an anticlimax and racing from one is a lottery. Auto-excluded here so
+    // both the server and the pools generator agree without a shared list.
+    let disambig =
+        |v: u32| flags.get(v as usize).is_some_and(|f| f & crate::extras::FLAG_DISAMBIG != 0);
     let mut ranked: Vec<u32> = (0..graph.len() as u32)
-        .filter(|&v| graph.forward.degree(v) >= 10 && !deny.contains(&v))
+        .filter(|&v| graph.forward.degree(v) >= 10 && !deny.contains(&v) && !disambig(v))
         .collect();
     let keep = PLAYABLE_POOL.min(ranked.len().div_ceil(4));
     if keep > 0 && keep < ranked.len() {
@@ -367,6 +383,13 @@ pub struct Game {
     /// Readership is the fame signal players recognise — in-degree is
     /// editor behaviour.
     pub views: Vec<u32>,
+    /// {{Short description}} per article — the editor-written one-line gloss.
+    /// Empty before the v3 parse.
+    pub descs: PerArticle,
+    /// First infobox kind ("person", "film"). Empty before the v3 parse.
+    pub kinds: PerArticle,
+    /// extras::FLAG_* bitmask per article; empty before the v3 parse.
+    pub flags: Vec<u32>,
     /// Lowercased-title search structures, built once at load.
     search: SearchIndex,
     /// Precomputed puzzle pairs with route counts, when pools.parquet exists.
@@ -455,7 +478,9 @@ impl Game {
         let n_articles = graph.len();
         let layout = Layout::load(data_dir, graph.len())?;
 
-        let playable = playable_pool(&graph, &load_endpoint_deny(data_dir, &graph));
+        // Flags load early: the playable pool needs the disambig bit.
+        let flags = load_article_flags(data_dir, n_articles)?;
+        let playable = playable_pool(&graph, &load_endpoint_deny(data_dir, &graph), &flags);
 
         let mut hubs: Vec<u32> = (0..graph.len() as u32).collect();
         let k = MAX_HUBS.min(hubs.len());
@@ -506,6 +531,13 @@ impl Game {
         // 09_pageviews.py, and absent until it has run.
         let views = read_u32_column(&data_dir.join("pageviews.parquet"), n_articles, "pageviews")?;
 
+        // The v3 extractions. Same degrade-gracefully contract as everything
+        // above: absent files mean the feature quietly does not exist.
+        // PerArticle already reads (id, string) parquet by position, so the
+        // one-per-article files reuse it with a cap of 1.
+        let descs = PerArticle::load(&data_dir.join("short_descriptions.parquet"), n_articles, 1)?;
+        let kinds = PerArticle::load(&data_dir.join("infobox_types.parquet"), n_articles, 1)?;
+
         // Region names, preferring what editors wrote over what a model
         // guessed. A region is an emergent cluster with no category of its
         // own, but its members carry categories, and the most common one
@@ -547,6 +579,9 @@ impl Game {
             aliases,
             sizes,
             views,
+            descs,
+            kinds,
+            flags,
             search,
             pools,
         })
