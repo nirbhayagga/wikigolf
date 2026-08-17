@@ -32,6 +32,12 @@ use wiki_parser::game::{
 };
 use wiki_parser::graph::PathFinder;
 
+/// The page itself and its share card ride along, so the out directory IS
+/// the deploy — nothing else to gather. data-static on <html> is what flips
+/// the page's fetch layer from /api to the file tree.
+const PAGE: &str = include_str!("../../static/index.html");
+const OG: &[u8] = include_bytes!("../../static/og.jpg");
+
 /// Articles per shard. ~880 keeps a shard around 250 KB once the CDN
 /// compresses it — one link-list click, one fetch.
 const SHARD_SIZE: usize = 896;
@@ -69,9 +75,24 @@ fn main() -> Result<()> {
     fs::create_dir_all(a.out.join("search"))?;
     fs::create_dir_all(a.out.join("daily"))?;
 
-    // ---- meta / regions / landmarks / map ---------------------------------
+    // ---- the page, the card, meta / regions / landmarks / map -------------
+    fs::write(
+        a.out.join("index.html"),
+        PAGE.replacen("<html lang=\"en\">", "<html lang=\"en\" data-static>", 1),
+    )?;
+    fs::write(a.out.join("og.jpg"), OG)?;
+
     let today = today_day();
     let today_number = today.saturating_sub(DAILY_EPOCH_DAY) + 1;
+    let bounds = game.layout.as_ref().map(|l| {
+        let fold = |v: &Vec<f32>, init: f32, f: fn(f32, f32) -> f32| {
+            v.iter().copied().filter(|x| x.is_finite()).fold(init, f)
+        };
+        json!([
+            fold(&l.x, f32::MAX, f32::min), fold(&l.y, f32::MAX, f32::min),
+            fold(&l.x, f32::MIN, f32::max), fold(&l.y, f32::MIN, f32::max),
+        ])
+    });
     write_json(
         &a.out.join("meta.json"),
         &json!({
@@ -83,6 +104,9 @@ fn main() -> Result<()> {
             "today_number": today_number,
             "days_ahead": a.days,
             "has_map": game.layout.is_some(),
+            "bounds": bounds,
+            "views": !game.views.is_empty(),
+            "pools": game.has_pools(),
             "static": true,
         }),
     )?;
@@ -95,15 +119,18 @@ fn main() -> Result<()> {
             .map(|(t, x, y, c)| json!({"title": t, "x": x, "y": y, "c": c}))
             .collect::<Vec<_>>()),
     )?;
-    write_json(
-        &a.out.join("map.json"),
-        &json!(game
-            .map_sample(45_000)
-            .into_iter()
-            .map(|(x, y, c)| json!([x, y, c]))
-            .collect::<Vec<_>>()),
-    )?;
-    eprintln!("  meta + map written");
+    // Columnar, exactly the live /api/map shape — the page draws it as-is.
+    {
+        let pts = game.map_sample(45_000);
+        let (mut xs, mut ys, mut cs) = (Vec::new(), Vec::new(), Vec::new());
+        for (x, y, c) in pts {
+            xs.push(x);
+            ys.push(y);
+            cs.push(c);
+        }
+        write_json(&a.out.join("map.json"), &json!({"x": xs, "y": ys, "c": cs}))?;
+    }
+    eprintln!("  page + meta + map written");
 
     // ---- article shards ---------------------------------------------------
     let coord = |id: u32| -> (Option<f32>, Option<f32>, Option<i32>) {
@@ -189,6 +216,31 @@ fn main() -> Result<()> {
         write_json(&a.out.join(format!("search/{file}.json")), &json!(obj))?;
     }
     eprintln!("  {n_prefixes} search prefixes in {n_files} bucket files");
+
+    // ---- random race pools ------------------------------------------------
+    // 1,500 pre-drawn races per difficulty, par and routes attached, so the
+    // static build's Random button works. Deterministic seed: the file is
+    // reproducible from the same pools.
+    if game.has_pools() {
+        fs::create_dir_all(a.out.join("random"))?;
+        for d in [Difficulty::Easy, Difficulty::Medium, Difficulty::Hard] {
+            let mut rng = Rng::new(0x57A7_1C00 ^ d as u64);
+            let ban = d.rules().0;
+            let mut rows = Vec::with_capacity(1500);
+            for _ in 0..1500 {
+                if let Some((src, dst, par, routes)) = game.pools_pick_full(d, &mut rng) {
+                    rows.push(json!([
+                        src, g.title(src), dst, g.title(dst), par, routes
+                    ]));
+                }
+            }
+            write_json(
+                &a.out.join(format!("random/{}.json", format!("{d:?}").to_lowercase())),
+                &json!({"ban_degree": ban, "races": rows}),
+            )?;
+        }
+        eprintln!("  random race files written");
+    }
 
     // ---- dailies + rounds, archive and future -----------------------------
     let first = if a.archive { 1 } else { today_number };

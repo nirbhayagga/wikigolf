@@ -616,7 +616,118 @@ const kindGlyph = k => {
   return '';
 };
 
+/* ---------------- static mode ----------------
+   The exporter stamps data-static on <html>, and every api() call routes
+   into a file-tree adapter instead of /api. What the files cannot answer
+   (custom-pair par, the compass, live boards, "a shortest route") the
+   static init hides, so nothing on screen ever promises what a file host
+   cannot deliver. */
+const STATIC = document.documentElement.hasAttribute('data-static');
+const S_CACHE = new Map();     // path -> parsed json, shards LRU-capped
+let S_RUNS = new Map();        // fake run id -> {par, routes}
+let S_NEXTRUN = 1;
+
+async function sj(path) {
+  if (S_CACHE.has(path)) return S_CACHE.get(path);
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(`missing ${path}`);
+  const j = await r.json();
+  if (S_CACHE.size > 60) S_CACHE.delete(S_CACHE.keys().next().value);
+  S_CACHE.set(path, j);
+  return j;
+}
+
+function sIssue(p) {
+  const run = S_NEXTRUN++;
+  S_RUNS.set(run, { routes: p.routes ?? 0 });
+  return run;
+}
+
+function sPuzzle(raw, difficulty, number) {
+  return { start: raw.start, goal: raw.goal, optimal: raw.par,
+    ban_degree: raw.ban_degree ?? null, difficulty, number: number ?? null,
+    compass: 0, run: sIssue(raw) };
+}
+
+async function staticApi(p, o) {
+  const [path, qs] = p.split('?');
+  const q = new URLSearchParams(qs || '');
+  const meta = await sj('meta.json');
+
+  if (path === '/api/meta') return meta;
+  if (path === '/api/regions') return sj('regions.json');
+  if (path === '/api/landmarks') return sj('landmarks.json');
+  if (path === '/api/map') return sj('map.json');
+  if (path === '/api/hubs') return { ban_degree: null, excluded: 0, sample: [] };
+  if (path === '/api/dist') return { total: 0, hist: {} };
+
+  if (path.startsWith('/api/article/')) {
+    const id = +path.slice('/api/article/'.length);
+    const shard = await sj(`shards/${Math.floor(id / meta.shard_size)}.json`);
+    const e = shard.find(a => a[0] === id);
+    if (!e) throw new Error('no such article');
+    const ban = q.get('ban_degree') ? +q.get('ban_degree') : null;
+    const goal = q.get('goal') ? +q.get('goal') : null;
+    const [eid, title, desc, kind, flags, views, community, x, y, deg, links] = e;
+    return { id: eid, title, desc, kind, views: views || undefined,
+      featured: !!(flags & 6), disambig: !!(flags & 1),
+      community, x, y, in_degree: deg,
+      links: links.map(([lid, lt, ld]) => ({ id: lid, title: lt, in_degree: ld,
+        banned: ban != null && lid !== goal && ld > ban })) };
+  }
+
+  if (path === '/api/daily' || path === '/api/course') {
+    const number = q.get('number') || meta.today_number;
+    if (+number > meta.today_number + meta.days_ahead)
+      throw new Error('that daily is beyond what this build carries');
+    const d = await sj(`daily/${number}.json`);
+    if (path === '/api/daily') {
+      const dif = q.get('difficulty') || 'medium';
+      const raw = d.difficulties[dif];
+      if (!raw) throw new Error('could not load the daily');
+      return sPuzzle(raw, dif, d.number);
+    }
+    return { number: d.number, par: d.round.par,
+      holes: d.round.holes.map((h, i) => sPuzzle(h, `round-h${i+1}`, d.number)) };
+  }
+
+  if (path === '/api/puzzle') {
+    if (q.get('from') || q.get('to') || q.get('region'))
+      throw new Error('custom and topic races need the live server');
+    const dif = q.get('difficulty') || 'easy';
+    const rp = await sj(`random/${dif}.json`);
+    const r = rp.races[Math.floor(Math.random() * rp.races.length)];
+    const [sid, st, gid, gt, par, routes] = r;
+    return sPuzzle({ start: { id: sid, title: st, in_degree: 0 },
+      goal: { id: gid, title: gt, in_degree: 0 },
+      par, routes, ban_degree: rp.ban_degree }, dif, null);
+  }
+
+  if (path === '/api/routes') {
+    const r = S_RUNS.get(+q.get('run'));
+    if (!r) throw new Error('unknown or expired run');
+    return { routes: r.routes, exact: true };
+  }
+
+  if (path === '/api/search') {
+    const query = (q.get('q') || '').trim().toLowerCase();
+    if (query.length < 2) return [];
+    const cs = [...query];
+    const file = (cs[0].codePointAt(0) * 31 + cs[1].codePointAt(0)) % 4096;
+    const bucket = await sj(`search/${file}.json`).catch(() => ({}));
+    const rows = bucket[cs[0] + cs[1]] || [];
+    const limit = +(q.get('limit') || 10);
+    return rows
+      .filter(([, t]) => t.toLowerCase().includes(query))
+      .slice(0, limit)
+      .map(([id, title, deg]) => ({ id, title, in_degree: deg }));
+  }
+
+  throw new Error('not available in the static build');
+}
+
 async function api(p, o) {
+  if (STATIC) return staticApi(p, o);
   const r = await fetch(p, o);
   if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error || r.statusText);
   return r.json();
@@ -1126,6 +1237,7 @@ async function finish(won) {
     ? `Hard mode: routes through articles with more than ${state.ban.toLocaleString()} inbound links were banned for both you and the optimal route.`
     : '';
   $('result').style.display='grid';
+  if (STATIC) $('dailydist').textContent = '';
   if (ROUND) {
     roundHoleDone(won, clicks, par);
     if (ROUND.idx + 1 < ROUND.holes.length) {
@@ -1140,11 +1252,18 @@ async function finish(won) {
     if (!state.archive) startCountdown();
   }
 
+  if (STATIC) {
+    // No pathfinding without a server: hide the route boxes rather than
+    // show "no route exists" for routes that exist fine.
+    $('route').innerHTML = ''; $('routetxt').textContent = '';
+    $('fromherebox').style.display = 'none';
+  }
   const ask = (from) => api('/api/path', { method:'POST',
     headers:{'content-type':'application/json'},
     body: JSON.stringify({ from, to: state.goal.id, ban_degree: state.ban }) });
 
   try {
+    if (STATIC) throw new Error('static');
     const p = await ask(state.trail[0].id);
     if (p.found) {
       // "A" shortest route, not "the": ties are common in a graph this dense
@@ -1677,6 +1796,17 @@ window.addEventListener('keydown', e => {
 
 (async function init(){
   setTheme(localStorage.getItem('wr-theme') || 'midnight');
+  if (STATIC) {
+    for (const id of ['hubctl', 'custom', 'compass']) {
+      const el = $(id); if (el) el.style.display = 'none';
+    }
+    // Boards need a server; the round stays 3 holes (9 isn't exported).
+    $('nick').parentElement.style.display = 'none';
+    $('board').parentElement.style.display = 'none';
+    $('rholes').style.display = 'none';
+    $('lgroup').checked = false; // shards carry no region per link
+    $('lgroup').parentElement.style.display = 'none';
+  }
   META = await api('/api/meta');
   try { REGIONS = await api('/api/regions'); } catch { REGIONS = {}; }
   $('mapmeta').textContent =

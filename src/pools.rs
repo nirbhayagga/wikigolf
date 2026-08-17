@@ -129,6 +129,32 @@ impl Pools {
         None
     }
 
+    /// Like `pick`, but returning the full record — the static exporter
+    /// bakes these into random/{difficulty}.json so the file-only build can
+    /// serve random races with par and route count already attached.
+    pub fn pick_full(&self, d: Difficulty, rng: &mut Rng) -> Option<(u32, u32, usize, u32)> {
+        let di = diff_index(d);
+        let (_, min_len) = d.rules();
+        let total: u64 = (0..PAR_SPAN)
+            .map(|i| if self.buckets[di][i].is_empty() { 0 } else { WEIGHTS[di][i] })
+            .sum();
+        if total == 0 {
+            return None;
+        }
+        let mut r = rng.next_u64() % total;
+        for (off, (b, &weight)) in self.buckets[di].iter().zip(&WEIGHTS[di]).enumerate() {
+            if b.is_empty() {
+                continue;
+            }
+            if r < weight {
+                let (s, t, routes) = b[(rng.next_u64() % b.len() as u64) as usize];
+                return Some((s, t, min_len + off, routes));
+            }
+            r -= weight;
+        }
+        None
+    }
+
     /// Draw from one exact par bucket — how a course hole gets its designed
     /// par. Full bucket range (no route-count halving): a round mixes skill
     /// levels by construction.
