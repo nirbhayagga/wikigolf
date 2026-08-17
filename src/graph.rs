@@ -225,6 +225,22 @@ impl Graph {
     pub fn title(&self, id: u32) -> &str {
         &self.titles[id as usize]
     }
+
+    /// Every redirect alias with its target article, as normalized strings.
+    ///
+    /// The lookup map holds both real titles and aliases; the filter keeps
+    /// only the aliases. Sourced from the same map `resolve` consults, so
+    /// what search-by-alias finds and what typing the alias resolves to can
+    /// never disagree.
+    pub fn alias_entries(&self) -> impl Iterator<Item = (&str, u32)> {
+        self.lookup.iter().filter_map(|(k, &id)| {
+            if k.as_ref() != self.titles[id as usize].as_str() {
+                Some((k.as_ref(), id))
+            } else {
+                None
+            }
+        })
+    }
 }
 
 /// Reusable bidirectional BFS scratch space.

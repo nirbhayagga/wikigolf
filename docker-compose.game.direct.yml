@@ -62,17 +62,18 @@ services:
       # wifi or a public IP it is a decision, not a default.
       - "${BIND:-0.0.0.0}:${PORT:-8080}:8080"
 
-    # MEASURED at HEAD on the full enwiki set: 5.75 GB peak during load,
-    # ~5.2 GB settled (grew from 3.79 GB when categories, aliases, sizes and
-    # the search index moved into memory). Keep ~2 GB of headroom — a limit
-    # below the peak kills the container mid-load with nothing in its logs.
-    # The limit cannot protect a host with less RAM than the limit — the
-    # kernel OOM killer takes the process first, and it presents as an
-    # unexplained restart loop rather than an error.
+    # MEASURED at HEAD on the full enwiki set: 7.1 GB settled (3.79 GB
+    # before categories, aliases, sizes and the title+alias search index
+    # moved into memory). Keep ~2-3 GB of headroom — a limit below the peak
+    # kills the container mid-load with nothing in its logs. The limit
+    # cannot protect a host with less RAM than the limit — the kernel OOM
+    # killer takes the process first, and it presents as an unexplained
+    # restart loop rather than an error. `--no-alias-search` shaves ~450 MB
+    # for smaller boxes.
     deploy:
       resources:
         limits:
-          memory: 8g
+          memory: 10g
 
 volumes:
   state:

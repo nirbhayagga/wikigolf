@@ -115,9 +115,10 @@ fn search_score(title_lower: &str, q: &str, in_degree: usize) -> Option<u64> {
 /// Precomputed search structures, built once at load.
 ///
 /// The old search lowercased all 7.2M titles on every keystroke — roughly
-/// 7.2M short-lived allocations per query, ~100 ms. The index stores the
-/// lowercase forms once (one contiguous buffer plus offsets, ~170 MB at
-/// enwiki scale) and two orderings over them:
+/// 7.2M short-lived allocations per query, ~100 ms — and could not see
+/// aliases at all. The index holds one entry per title AND per redirect
+/// alias (~19M entries, ~600 MB at enwiki scale): one contiguous lowercase
+/// buffer plus offsets, an owner map, and two orderings over the entries:
 ///
 /// * `alpha` — ids sorted by lowercase title, so exact matches are a binary
 ///   search instead of a scan.
@@ -135,38 +136,72 @@ fn search_score(title_lower: &str, q: &str, in_degree: usize) -> Option<u64> {
 pub(crate) struct SearchIndex {
     corpus: String,
     offsets: Vec<u32>,
+    /// Entry -> the article it names. Identity for the first n_titles
+    /// entries; the redirect target for alias entries. This is what makes
+    /// "NYC" find New York City: aliases are first-class entries, and
+    /// results collapse to the best-scoring entry per owner.
+    owner: Vec<u32>,
     by_degree: Vec<u32>,
     alpha: Vec<u32>,
 }
 
 impl SearchIndex {
-    pub(crate) fn build(titles: &[String], degree_of: &dyn Fn(u32) -> usize) -> SearchIndex {
-        let total: usize = titles.iter().map(|t| t.len()).sum();
-        let mut corpus = String::with_capacity(total + total / 8);
-        let mut offsets = Vec::with_capacity(titles.len() + 1);
+    pub(crate) fn build<'a, I, F>(
+        titles: &[String],
+        aliases: F,
+        degree_of: &dyn Fn(u32) -> usize,
+    ) -> SearchIndex
+    where
+        F: Fn() -> I,
+        I: Iterator<Item = (&'a str, u32)>,
+    {
+        // Two passes so every buffer is allocated once at its final size.
+        // Growing by doubling instead cost ~1.4 GB of resident memory at
+        // enwiki scale: the transient copies are freed, but the allocator
+        // retains the pages, and the server carries them forever. The 1/64
+        // slack absorbs the rare characters whose lowercase form is longer
+        // than the original.
+        let mut n_entries = titles.len();
+        let mut total: usize = titles.iter().map(|t| t.len()).sum();
+        for (a, _) in aliases() {
+            n_entries += 1;
+            total += a.len();
+        }
+        let mut corpus = String::with_capacity(total + total / 64 + 16);
+        let mut offsets = Vec::with_capacity(n_entries + 1);
+        let mut owner: Vec<u32> = Vec::with_capacity(n_entries);
         offsets.push(0u32);
-        for t in titles {
-            for c in t.chars() {
+        let mut push = |s: &str, o: u32, corpus: &mut String, offsets: &mut Vec<u32>| {
+            for c in s.chars() {
                 corpus.extend(c.to_lowercase());
             }
             offsets.push(corpus.len() as u32);
-        }
-
-        let mut by_degree: Vec<u32> = (0..titles.len() as u32).collect();
-        by_degree.sort_unstable_by_key(|&v| std::cmp::Reverse(degree_of(v)));
-
-        let slice = |id: u32| -> &str {
-            &corpus[offsets[id as usize] as usize..offsets[id as usize + 1] as usize]
+            owner.push(o);
         };
-        let mut alpha: Vec<u32> = (0..titles.len() as u32).collect();
+        for (i, t) in titles.iter().enumerate() {
+            push(t, i as u32, &mut corpus, &mut offsets);
+        }
+        for (a, target) in aliases() {
+            push(a, target, &mut corpus, &mut offsets);
+        }
+        corpus.shrink_to_fit();
+        let n = owner.len() as u32;
+
+        let mut by_degree: Vec<u32> = (0..n).collect();
+        by_degree.sort_unstable_by_key(|&e| std::cmp::Reverse(degree_of(owner[e as usize])));
+
+        let slice = |e: u32| -> &str {
+            &corpus[offsets[e as usize] as usize..offsets[e as usize + 1] as usize]
+        };
+        let mut alpha: Vec<u32> = (0..n).collect();
         alpha.sort_unstable_by(|&a, &b| slice(a).cmp(slice(b)));
 
-        SearchIndex { corpus, offsets, by_degree, alpha }
+        SearchIndex { corpus, offsets, owner, by_degree, alpha }
     }
 
     #[inline]
-    fn lower(&self, id: u32) -> &str {
-        &self.corpus[self.offsets[id as usize] as usize..self.offsets[id as usize + 1] as usize]
+    fn lower(&self, e: u32) -> &str {
+        &self.corpus[self.offsets[e as usize] as usize..self.offsets[e as usize + 1] as usize]
     }
 }
 
@@ -184,48 +219,60 @@ fn search_ranked(
         return Vec::new();
     }
     let cap = limit.max(1);
+    // (score, owner article). Several entries can name one article — its
+    // title and any number of aliases — so ordering and truncation always
+    // happen through `rank`, which dedups to the best entry per owner.
     let mut hits: Vec<(u64, u32)> = Vec::new();
+    let rank = |hits: &mut Vec<(u64, u32)>| {
+        hits.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let mut seen = std::collections::HashSet::new();
+        hits.retain(|&(_, owner)| seen.insert(owner));
+    };
 
-    // Exact matches by binary search. Distinct titles can share a lowercase
-    // form ("Cat" / "CAT"), so take the whole equal range.
-    let lo = idx.alpha.partition_point(|&id| idx.lower(id) < q.as_str());
-    for &id in &idx.alpha[lo..] {
-        if idx.lower(id) != q {
+    // Exact matches by binary search. Distinct entries can share a lowercase
+    // form ("Cat" / "CAT" / an alias "cat"), so take the whole equal range.
+    let lo = idx.alpha.partition_point(|&e| idx.lower(e) < q.as_str());
+    for &e in &idx.alpha[lo..] {
+        if idx.lower(e) != q {
             break;
         }
-        if let Some(score) = search_score(idx.lower(id), &q, degree_of(id)) {
-            hits.push((score, id));
+        let owner = idx.owner[e as usize];
+        if let Some(score) = search_score(idx.lower(e), &q, degree_of(owner)) {
+            hits.push((score, owner));
         }
     }
 
     // Popularity-ordered scan with early exit. `worst` is the cap-th best
-    // score once we have that many; strict `<` in the cut-off keeps the tie
-    // ordering identical to the full scan.
+    // deduplicated score once known; strict `<` in the cut-off keeps the
+    // tie ordering identical to a full scan.
     let mut worst: Option<u64> = None;
-    for &id in &idx.by_degree {
-        let deg = degree_of(id) as u64;
+    for &e in &idx.by_degree {
+        let owner = idx.owner[e as usize];
+        let deg = degree_of(owner) as u64;
         if let Some(w) = worst {
             if 100 * (deg + 1) < w {
                 break;
             }
         }
-        let t = idx.lower(id);
+        let t = idx.lower(e);
         if t == q {
             continue; // already counted via the exact range
         }
         if let Some(score) = search_score(t, &q, deg as usize) {
-            hits.push((score, id));
+            hits.push((score, owner));
             if hits.len() >= cap * 4 {
-                hits.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-                hits.truncate(cap);
-                worst = Some(hits[cap - 1].0);
+                rank(&mut hits);
+                if hits.len() >= cap {
+                    hits.truncate(cap);
+                    worst = Some(hits[cap - 1].0);
+                }
             }
         }
     }
 
-    hits.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    rank(&mut hits);
     hits.truncate(limit);
-    hits.into_iter().map(|(_, id)| id).collect()
+    hits.into_iter().map(|(_, owner)| owner).collect()
 }
 
 /// How many of the most linked-to articles are eligible as race endpoints.
@@ -358,6 +405,14 @@ impl Rng {
 
 impl Game {
     pub fn load(data_dir: &Path) -> Result<Game> {
+        Self::load_with(data_dir, true)
+    }
+
+    /// `alias_search: false` leaves the 12M redirect aliases out of the
+    /// search index, saving ~450 MB of resident memory. For small boxes:
+    /// search still works over every title, "NYC" just stops finding New
+    /// York City.
+    pub fn load_with(data_dir: &Path, alias_search: bool) -> Result<Game> {
         let graph = Graph::load(data_dir)?;
         let n_articles = graph.len();
         let layout = Layout::load(data_dir, graph.len())?;
@@ -421,7 +476,13 @@ impl Game {
             derive_region_names(&layout, &categories, n_articles)
         };
 
-        let search = SearchIndex::build(&graph.titles, &|v| graph.reverse.degree(v));
+        let search = if alias_search {
+            SearchIndex::build(&graph.titles, || graph.alias_entries(), &|v| {
+                graph.reverse.degree(v)
+            })
+        } else {
+            SearchIndex::build(&graph.titles, std::iter::empty, &|v| graph.reverse.degree(v))
+        };
 
         // Optional but never silently wrong: a missing pools file degrades to
         // rejection sampling, a stale one refuses to load (see pools.rs).
@@ -640,7 +701,8 @@ impl Game {
         Some(Puzzle { start: a, goal: b, ban_degree, optimal: path.len() - 1 })
     }
 
-    /// Title search over every article, ranked by match quality x popularity.
+    /// Search over every article title and redirect alias, ranked by match
+    /// quality x popularity — "NYC" finds New York City.
     ///
     /// Sub-millisecond for typical autocomplete queries via the prebuilt
     /// index (see `SearchIndex`); the no-match worst case is still a linear
@@ -820,7 +882,7 @@ mod tests {
         .collect();
         let degrees = vec![2_817usize, 93_701, 241, 1, 48, 141_719, 5, 900, 60, 300];
 
-        let idx = SearchIndex::build(&titles, &|v| degrees[v as usize]);
+        let idx = SearchIndex::build(&titles, std::iter::empty, &|v| degrees[v as usize]);
         for q in ["cat", "einst", "einstein", "franc", "e", "zzz-no-match", "  ", "CAT"] {
             for limit in [1, 3, 10] {
                 assert_eq!(
@@ -838,11 +900,36 @@ mod tests {
         // cut-off both trigger; the winners must still be the most linked.
         let titles: Vec<String> = (0..500).map(|i| format!("Topic {i}")).collect();
         let degrees: Vec<usize> = (0..500).map(|i| (i * 7) % 499).collect();
-        let idx = SearchIndex::build(&titles, &|v| degrees[v as usize]);
+        let idx = SearchIndex::build(&titles, std::iter::empty, &|v| degrees[v as usize]);
         assert_eq!(
             search_ranked(&idx, &|v| degrees[v as usize], "topic", 5),
             search_reference(&titles, &degrees, "topic", 5),
         );
+    }
+
+    #[test]
+    fn aliases_find_their_article_and_dedup() {
+        let titles: Vec<String> =
+            ["New York City", "Nyctalus", "Albert Einstein"].iter().map(|s| s.to_string()).collect();
+        let degrees = [50_000usize, 3, 241];
+        let aliases: Vec<(&str, u32)> =
+            vec![("NYC", 0), ("The Big Apple", 0), ("Einstein", 2)];
+        let idx = SearchIndex::build(
+            &titles,
+            || aliases.iter().copied(),
+            &|v| degrees[v as usize],
+        );
+        let search = |q: &str, n: usize| search_ranked(&idx, &|v| degrees[v as usize], q, n);
+
+        // An exact alias match outranks a title that merely starts with it.
+        assert_eq!(search("nyc", 2), vec![0, 1]);
+        // A substring hit through an alias still resolves to the article.
+        assert_eq!(search("big apple", 3), vec![0]);
+        // Title and alias of the same article both match "einstein":
+        // exactly one result for it, not two.
+        assert_eq!(search("einstein", 5), vec![2]);
+        // Nothing invents matches.
+        assert!(search("zzz", 5).is_empty());
     }
 }
 

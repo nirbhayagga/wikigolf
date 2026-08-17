@@ -129,15 +129,17 @@ services:
       # Explicit, because Traefik guesses wrong when a container is attached to
       # more than one network.
       - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
-    # MEASURED at HEAD on the full enwiki set: 5.75 GB peak during load,
-    # ~5.2 GB settled. The old 6g limit dated from before categories, aliases,
-    # sizes and the search index moved into memory (3.79 GB then) — the
-    # footprint grew into the limit while the limit stood still, which is
-    # exactly the kind of failure that presents as "the container never comes
-    # up" with nothing in its logs: the cgroup kills it mid-load. Keep ~2 GB
-    # of headroom over the measured peak.
+    # MEASURED at HEAD on the full enwiki set: 7.1 GB settled (3.79 GB
+    # originally; categories, aliases, sizes, then the title+alias search
+    # index each moved more of the data into memory). The limit has been
+    # outgrown once already — the footprint rose while the limit stood
+    # still, and a cgroup kill mid-load presents as "the container never
+    # comes up" with nothing in its logs. Keep ~2-3 GB of headroom over the
+    # measured number, and re-measure whenever the server starts loading
+    # something new. `--no-alias-search` shaves ~450 MB if it ever has to
+    # fit somewhere smaller.
     #
-    # On a VM, give the VM at least 10 GB with this limit. The limit cannot
+    # On a VM, give the VM at least 12 GB with this limit. The limit cannot
     # protect anything if the VM itself has less than the limit: the kernel
     # OOM killer takes the process first, and it looks like an unexplained
     # restart loop rather than an error. The image build wants another 2-3 GB
@@ -145,7 +147,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 8g
+          memory: 10g
 
 networks:
   proxy:

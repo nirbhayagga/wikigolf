@@ -60,6 +60,13 @@ struct Args {
     /// local development silently breaks identity.
     #[arg(long)]
     secure_cookies: bool,
+
+    /// Leave redirect aliases out of the search index, saving ~450 MB of
+    /// resident memory (measured total drops from ~7.1 GB to ~6.6 GB at
+    /// enwiki scale). Search still covers every title; "NYC" just stops
+    /// finding New York City. For squeezing onto an 8 GB box.
+    #[arg(long)]
+    no_alias_search: bool,
 }
 
 /// Pathfinder scratch space is ~72 MB per instance at enwiki scale, so it is
@@ -1077,7 +1084,7 @@ async fn serve() -> Result<()> {
 
     eprintln!("loading graph from {}...", args.data.display());
     let t = std::time::Instant::now();
-    let game = Game::load(&args.data)?;
+    let game = Game::load_with(&args.data, !args.no_alias_search)?;
     eprintln!(
         "   {} articles, {} edges, map: {} — {:.1}s",
         game.graph.len(),
