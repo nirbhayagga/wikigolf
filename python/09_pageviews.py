@@ -91,7 +91,29 @@ def main():
         src = os.path.join(paths.data_dir, f"pageviews-{year}{month}.bz2")
         if not os.path.exists(src):
             print(f"downloading {url}")
-            urllib.request.urlretrieve(url, src)
+            # Wikimedia returns 403 to anonymous default user agents by
+            # policy — the request must say who is asking. Download to a
+            # .part and rename only on success, so an interrupted transfer
+            # can never be mistaken for a complete file (a truncated bz2
+            # would otherwise silently undercount everything).
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent":
+                         "wiki-graph-pipeline/0.2 (personal research project)"},
+            )
+            part = src + ".part"
+            with urllib.request.urlopen(req) as r, open(part, "wb") as f:
+                total = int(r.headers.get("Content-Length") or 0)
+                done = 0
+                while True:
+                    chunk = r.read(1 << 22)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    if done % (1 << 28) < (1 << 22) and total:
+                        print(f"  {done / 1e9:.1f} / {total / 1e9:.1f} GB", flush=True)
+            os.replace(part, src)
         else:
             print(f"using cached {src}")
 

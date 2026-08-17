@@ -329,6 +329,10 @@ pub struct Game {
     pub aliases: PerArticle,
     /// Wikitext bytes per article; empty when the parse predates it.
     pub sizes: Vec<u32>,
+    /// Monthly pageviews per article; empty until 09_pageviews.py has run.
+    /// Readership is the fame signal players recognise — in-degree is
+    /// editor behaviour.
+    pub views: Vec<u32>,
     /// Lowercased-title search structures, built once at load.
     search: SearchIndex,
     /// Precomputed puzzle pairs with route counts, when pools.parquet exists.
@@ -463,7 +467,10 @@ impl Game {
         let categories = PerArticle::load(&data_dir.join("categories.parquet"), n_articles, 8)?;
         let aliases =
             PerArticle::load(&data_dir.join("redirects.parquet"), n_articles, MAX_ALIASES)?;
-        let sizes = read_sizes(&data_dir.join("article_sizes.parquet"), n_articles)?;
+        let sizes = read_u32_column(&data_dir.join("article_sizes.parquet"), n_articles, "article_sizes")?;
+        // What people actually read, not what editors link — from
+        // 09_pageviews.py, and absent until it has run.
+        let views = read_u32_column(&data_dir.join("pageviews.parquet"), n_articles, "pageviews")?;
 
         // Region names, preferring what editors wrote over what a model
         // guessed. A region is an emergent cluster with no category of its
@@ -505,6 +512,7 @@ impl Game {
             categories,
             aliases,
             sizes,
+            views,
             search,
             pools,
         })
@@ -1028,7 +1036,10 @@ impl PerArticle {
 const MAX_ALIASES: usize = 5;
 
 /// Wikitext byte length per article, indexed by id. Empty when absent.
-fn read_sizes(path: &Path, n: usize) -> Result<Vec<u32>> {
+/// Read an (id: u32, value: u32) parquet into a dense per-article vector.
+/// Serves both article_sizes.parquet and pageviews.parquet — same shape,
+/// same "missing file is just empty" semantics.
+fn read_u32_column(path: &Path, n: usize, what: &str) -> Result<Vec<u32>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -1041,12 +1052,12 @@ fn read_sizes(path: &Path, n: usize) -> Result<Vec<u32>> {
             .column(0)
             .as_any()
             .downcast_ref::<arrow::array::UInt32Array>()
-            .context("article_sizes column 0 is not uint32")?;
+            .with_context(|| format!("{what} column 0 is not uint32"))?;
         let bytes = batch
             .column(1)
             .as_any()
             .downcast_ref::<arrow::array::UInt32Array>()
-            .context("article_sizes column 1 is not uint32")?;
+            .with_context(|| format!("{what} column 1 is not uint32"))?;
         for i in 0..batch.num_rows() {
             let id = ids.value(i) as usize;
             if id < n {
