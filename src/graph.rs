@@ -255,6 +255,12 @@ pub struct PathFinder {
     parent_b: Vec<u32>,
     touched_f: Vec<u32>,
     touched_b: Vec<u32>,
+    /// Shortest-route counts, used only by `count_shortest_paths`. Allocated
+    /// lazily on the first count — a finder that only ever does path queries
+    /// never pays the 58 MB — and reused ever after, cleared through
+    /// `touched_f` like the distance arrays. Allocating this per call was
+    /// measured to roughly double the counting phase's cost at enwiki scale.
+    sigma: Vec<u64>,
 }
 
 /// Sentinel for "not reached". Real BFS depths stay far below this.
@@ -269,6 +275,7 @@ impl PathFinder {
             parent_b: vec![NONE; n],
             touched_f: Vec::new(),
             touched_b: Vec::new(),
+            sigma: Vec::new(),
         }
     }
 
@@ -276,6 +283,9 @@ impl PathFinder {
         for &v in &self.touched_f {
             self.dist_f[v as usize] = UNSEEN;
             self.parent_f[v as usize] = NONE;
+            if !self.sigma.is_empty() {
+                self.sigma[v as usize] = 0;
+            }
         }
         for &v in &self.touched_b {
             self.dist_b[v as usize] = UNSEEN;
@@ -438,11 +448,17 @@ impl PathFinder {
 
         // sigma[v] = number of shortest routes from `start` to v. Sparse:
         // only vertices this search touches are ever written, and `touched_f`
-        // already records exactly those for the reset.
-        let mut sigma: Vec<u64> = vec![0; n];
+        // already records exactly those for the reset (see the field doc).
+        if self.sigma.is_empty() {
+            self.sigma = vec![0; n];
+        }
+        // Disjoint borrows of the scratch arrays, so sigma can live in self
+        // (reused across calls) while dist and touched are written in the
+        // same loop.
+        let PathFinder { dist_f, touched_f, sigma, .. } = self;
         sigma[start as usize] = 1;
-        self.dist_f[start as usize] = 0;
-        self.touched_f.push(start);
+        dist_f[start as usize] = 0;
+        touched_f.push(start);
 
         let mut frontier = vec![start];
         let mut depth = 0u8;
@@ -456,10 +472,10 @@ impl PathFinder {
                     if w != goal && banned(w) {
                         continue;
                     }
-                    let d = self.dist_f[w as usize];
+                    let d = dist_f[w as usize];
                     if d == UNSEEN {
-                        self.dist_f[w as usize] = depth;
-                        self.touched_f.push(w);
+                        dist_f[w as usize] = depth;
+                        touched_f.push(w);
                         sigma[w as usize] = sv;
                         next.push(w);
                     } else if d == depth {
@@ -471,7 +487,7 @@ impl PathFinder {
             }
             // Finish the level before deciding: stopping at first sight of the
             // goal would count only the routes found so far on it.
-            if self.dist_f[goal as usize] == depth {
+            if dist_f[goal as usize] == depth {
                 return Some((depth as usize, sigma[goal as usize]));
             }
             frontier = next;

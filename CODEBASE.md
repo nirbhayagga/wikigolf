@@ -151,7 +151,8 @@ ids are stable across re-parses of the same dump.*
 | `manifest.json` | 348 B | Input + config fingerprint. Refuses to mix caches from different inputs. |
 | `community_stats.json` | — | Per-community sizes and exemplars. |
 | `community_labels.json` | — | LLM region names. Optional; categories supersede it. |
-| `pageviews.parquet` | — | `id`, `views`. Optional, external data. |
+| `pageviews.parquet` | — | `id`, `views`. Optional, external data (09_pageviews.py). |
+| `endpoint_deny.txt` | — | Optional editorial curation: one title per line, resolved through redirects; denied articles never appear as generated race endpoints. |
 | `pools.parquet` | a few MB | `difficulty`, `par`, `src`, `dst`, `routes`. Optional; from the `pools` binary. Carries the graph's article/edge counts as metadata — the server refuses it against a different dump. |
 
 ### Which map is which

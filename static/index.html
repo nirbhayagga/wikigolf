@@ -426,6 +426,11 @@
     <div class="row">
       <button class="primary" id="new" style="flex:1">Random race</button>
       <button id="daily" style="flex:1">&#9733; Daily</button>
+      <select id="ddiff" title="Daily difficulty" aria-label="Daily difficulty" style="max-width:74px">
+        <option value="medium" selected>med</option>
+        <option value="easy">easy</option>
+        <option value="hard">hard</option>
+      </select>
     </div>
 
     <div id="hubctl">
@@ -1131,9 +1136,12 @@ async function startRace(endpoint, extra) {
     // The daily is a fixed preset so everyone races the same thing; the
     // slider only steers free play.
     const isDaily = endpoint.endsWith('daily');
+    // Each difficulty has its own daily (the server mixes difficulty into
+    // the seed), so the picker beside the button is a real choice, not a
+    // reroll of the same race.
     const q = extra ? `${extra}&ban_top=${HUB_STOPS[+$('hubs').value]}`
       : isDaily
-      ? 'difficulty=medium'
+      ? `difficulty=${$('ddiff').value}`
       : `difficulty=hard&ban_top=${HUB_STOPS[+$('hubs').value]}`;
     const diff = isDaily ? 'daily' : 'custom';
     const p = await api(`${endpoint}?${q}`);
