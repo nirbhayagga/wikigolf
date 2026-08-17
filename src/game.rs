@@ -641,6 +641,15 @@ impl Game {
         self.pools.is_some()
     }
 
+    /// Full-record pool draw for the static exporter.
+    pub fn pools_pick_full(
+        &self,
+        d: Difficulty,
+        rng: &mut Rng,
+    ) -> Option<(u32, u32, usize, u32)> {
+        self.pools.as_ref()?.pick_full(d, rng)
+    }
+
     /// The in-degree limit that excludes roughly the top `n` articles, with a
     /// sample of what that excludes.
     ///
