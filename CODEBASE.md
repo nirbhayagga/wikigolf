@@ -45,6 +45,7 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 | `graph.rs` | ~800 | CSR link graph plus the search algorithms: bidirectional BFS, meet-in-the-middle shortest-path counting (60-90x the single-direction version; oracle-tested against it), reverse distance maps. |
 | `game.rs` | 814 | Game state: map coordinates, puzzle generation, search ranking, hub bans, categories, aliases, region naming. Search runs on a prebuilt index (exact by binary search, popularity-ordered scan with early exit) — sub-ms for typical queries vs the old ~100 ms full scan. |
 | `pools.rs` | ~560 | Precomputed puzzle pools: parallel BFS bucketing by (difficulty, par) with reservoir sampling, route counting on survivors only, parquet round-trip with a dump fingerprint that refuses stale files, weighted draws (hard from few-routes pairs, easy from many). |
+| `duel.rs` | ~180 | Head-to-head rooms, **dark**: mounted only under `--enable-duels`, no UI references it. Read-aloud room codes, presence refereed server-side, broadcast relay per room — kilobytes each on the same process. |
 | `runs.rs` | 466 | Run issuing, path validation, compass charges, leaderboard. Never trusts a submitted score; re-walks the submitted path. |
 | `identity.rs` | 186 | HMAC-signed anonymous player cookie. |
 | `ratelimit.rs` | 111 | Per-IP token bucket. Hand-rolled — it is a HashMap and some arithmetic. |
@@ -56,6 +57,7 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 |---|---:|---|
 | `bin/serve.rs` | 1028 | The HTTP service. Holds the whole graph in memory; every response derives from the parser's Parquet, so the optimal path reported is optimal *in the world the player is playing in*. |
 | `bin/pathfind.rs` | 86 | CLI shortest path between two articles. |
+| `bin/static_export.rs` | ~260 | Emits the whole game as a static file tree (shards, search buckets, pre-generated dailies/rounds/randoms, the page itself) for free file hosting. Simple English: 2 s. The page's `data-static` adapter consumes it. |
 | `bin/pools.rs` | ~110 | Generates `pools.parquet` on the PC (~2 h at enwiki scale, once per dump; 32 min measured on Simple English). The server picks it up at startup; without it, puzzle generation falls back to rejection sampling unchanged. |
 
 ### Load-bearing details
@@ -111,6 +113,7 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 | `/api/dist` | free | Clicks histogram of one daily board — the "38% made par" line. |
 | `/api/course` | ~9x41 ms | 3- or 9-hole round: exact-par holes from the pools, seeded per day, each hole a normal issued run. |
 | `/api/submit` · `/api/leaderboard` | — | Re-walks the submitted path; never trusts a score. |
+| `/api/duel/new` · `/api/duel/ws/{code}` | dark | Mounted only under `--enable-duels`. Room create + websocket relay; duels never touch the leaderboard. |
 
 ### Load-bearing details
 

@@ -7,6 +7,7 @@
 //! which strings name the same article. Duplicating those rules is how they
 //! drift apart.
 
+pub mod duel;
 pub mod dump;
 pub mod edges;
 pub mod game;
