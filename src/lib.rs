@@ -16,5 +16,6 @@ pub mod ratelimit;
 pub mod runs;
 pub mod index;
 pub mod output;
+pub mod pools;
 pub mod titles;
 pub mod wikitext;

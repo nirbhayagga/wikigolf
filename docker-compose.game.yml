@@ -129,19 +129,23 @@ services:
       # Explicit, because Traefik guesses wrong when a container is attached to
       # more than one network.
       - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
-    # Loading 231.7M edges into CSR needs ~4 GB and about a minute (measured:
-    # 3.79 GB resident once up). Without a limit a memory spike takes the host
-    # down instead of the container.
+    # MEASURED at HEAD on the full enwiki set: 5.75 GB peak during load,
+    # ~5.2 GB settled. The old 6g limit dated from before categories, aliases,
+    # sizes and the search index moved into memory (3.79 GB then) — the
+    # footprint grew into the limit while the limit stood still, which is
+    # exactly the kind of failure that presents as "the container never comes
+    # up" with nothing in its logs: the cgroup kills it mid-load. Keep ~2 GB
+    # of headroom over the measured peak.
     #
-    # On a VM, give the VM at least 6 GB — 8 is comfortable. This limit cannot
-    # protect anything if the VM itself has less than the limit: the kernel OOM
-    # killer takes the process first, and it looks like an unexplained restart
-    # loop rather than an error. The image build wants another 2-3 GB on top,
-    # so a 4 GB VM typically dies during `cargo build`, before it ever serves.
+    # On a VM, give the VM at least 10 GB with this limit. The limit cannot
+    # protect anything if the VM itself has less than the limit: the kernel
+    # OOM killer takes the process first, and it looks like an unexplained
+    # restart loop rather than an error. The image build wants another 2-3 GB
+    # on top, so a small VM should pull a prebuilt IMAGE instead of building.
     deploy:
       resources:
         limits:
-          memory: 6g
+          memory: 8g
 
 networks:
   proxy:

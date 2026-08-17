@@ -42,7 +42,8 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 | `wikitext.rs` | 318 | Comment/nowiki/ref/template stripping and `[[wikilink]]` extraction. Every removal is behind a flag. |
 | `output.rs` | 217 | Parquet writers. The parser emits final artifacts directly, so nothing downstream re-reads a multi-GB CSV. |
 | `graph.rs` | 687 | CSR link graph plus the search algorithms: bidirectional BFS, shortest-path counting, reverse distance maps. |
-| `game.rs` | 814 | Game state: map coordinates, puzzle generation, search ranking, hub bans, categories, aliases, region naming. |
+| `game.rs` | 814 | Game state: map coordinates, puzzle generation, search ranking, hub bans, categories, aliases, region naming. Search runs on a prebuilt index (exact by binary search, popularity-ordered scan with early exit) — sub-ms for typical queries vs the old ~100 ms full scan. |
+| `pools.rs` | ~560 | Precomputed puzzle pools: parallel BFS bucketing by (difficulty, par) with reservoir sampling, route counting on survivors only, parquet round-trip with a dump fingerprint that refuses stale files, weighted draws (hard from few-routes pairs, easy from many). |
 | `runs.rs` | 466 | Run issuing, path validation, compass charges, leaderboard. Never trusts a submitted score; re-walks the submitted path. |
 | `identity.rs` | 186 | HMAC-signed anonymous player cookie. |
 | `ratelimit.rs` | 111 | Per-IP token bucket. Hand-rolled — it is a HashMap and some arithmetic. |
@@ -54,6 +55,7 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 |---|---:|---|
 | `bin/serve.rs` | 1028 | The HTTP service. Holds the whole graph in memory; every response derives from the parser's Parquet, so the optimal path reported is optimal *in the world the player is playing in*. |
 | `bin/pathfind.rs` | 86 | CLI shortest path between two articles. |
+| `bin/pools.rs` | ~110 | Generates `pools.parquet` on the PC (~2 h at enwiki scale, once per dump; 32 min measured on Simple English). The server picks it up at startup; without it, puzzle generation falls back to rejection sampling unchanged. |
 
 ### Load-bearing details
 
@@ -95,11 +97,11 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 
 | Route | Cost | Notes |
 |---|---|---|
-| `/api/meta` | 17 ms | Article and edge counts, map bounds. |
+| `/api/meta` | 17 ms | Article and edge counts, map bounds, whether pools are loaded. |
 | `/api/regions` | free | Region names, from categories or the LLM file. |
 | `/api/map` | 15 ms | 45k points, 1.72 MB, ETag so repeats are free. |
 | `/api/article/{id}` | 3.7 ms | Links with their categories, plus aliases and byte size. |
-| `/api/search` | ~100 ms | Linear scan of 7.2M titles. The first bottleneck under load. |
+| `/api/search` | sub-ms typical | Prebuilt index: exact by binary search, popularity-ordered scan with early exit. Worst case (no match) is still a full pass, but allocation-free. |
 | `/api/path` | 22 ms | Bidirectional BFS. |
 | `/api/puzzle` | 41 ms | Also accepts `from`/`to` (ids) or `from_title`/`to_title`. |
 | `/api/daily` | 41 ms | Seeded by the day. |
@@ -150,6 +152,7 @@ ids are stable across re-parses of the same dump.*
 | `community_stats.json` | — | Per-community sizes and exemplars. |
 | `community_labels.json` | — | LLM region names. Optional; categories supersede it. |
 | `pageviews.parquet` | — | `id`, `views`. Optional, external data. |
+| `pools.parquet` | a few MB | `difficulty`, `par`, `src`, `dst`, `routes`. Optional; from the `pools` binary. Carries the graph's article/edge counts as metadata — the server refuses it against a different dump. |
 
 ### Which map is which
 
