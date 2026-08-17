@@ -534,6 +534,18 @@ fn err(msg: impl Into<String>) -> (StatusCode, Json<serde_json::Value>) {
 /// deploy-visibility price, paid knowingly: on an LTE connection the page
 /// and the map are the two objects that matter, and with both edge-cached
 /// the uplink carries only per-race JSON — a few KB/s per active player.
+/// The share card, cropped from the 4K poster render and compiled in —
+/// no asset directory to mount, no way for it to 404. Immutable per build.
+async fn og_image() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "image/jpeg"),
+            (header::CACHE_CONTROL, "public, max-age=604800"),
+        ],
+        include_bytes!("../../static/og.jpg").as_slice(),
+    )
+}
+
 async fn index() -> impl IntoResponse {
     (
         [(header::CACHE_CONTROL, "public, max-age=300")],
@@ -1302,6 +1314,7 @@ async fn serve() -> Result<()> {
 
     let app = Router::new()
         .route("/", get(index))
+        .route("/og.jpg", get(og_image))
         .route("/api/meta", get(meta))
         .route("/api/regions", get(regions))
         .route("/api/search", get(search))
