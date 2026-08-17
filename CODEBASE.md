@@ -101,7 +101,7 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 | `/api/regions` | free | Region names, from categories or the LLM file. |
 | `/api/map` | 15 ms | 45k points, 1.72 MB, ETag so repeats are free. |
 | `/api/article/{id}` | 3.7 ms | Links with their categories, plus aliases and byte size. |
-| `/api/search` | sub-ms typical | Prebuilt index: exact by binary search, popularity-ordered scan with early exit. Worst case (no match) is still a full pass, but allocation-free. |
+| `/api/search` | sub-ms typical | Prebuilt index over titles AND redirect aliases ("NYC" finds New York City), deduped to the best entry per article. Worst case (no match) is still a full pass, but allocation-free. |
 | `/api/path` | 22 ms | Bidirectional BFS. |
 | `/api/puzzle` | 41 ms | Also accepts `from`/`to` (ids) or `from_title`/`to_title`. |
 | `/api/daily` | 41 ms | Seeded by the day. |
@@ -202,7 +202,7 @@ headroom on a 6 GB box.
 | Symmetrized edges | 419,049,910 in 26 s |
 | Full SFDP layout | ~10 h, 7,216,559 articles placed (99.96%) |
 | Leiden re-run at resolution 6 | **14 min**, reusing cached positions |
-| Server RSS | 3.79 GB, flat under load |
+| Server RSS | 7.1 GB, flat under load (3.79 GB before categories/aliases/sizes and the title+alias search index; `--no-alias-search` saves ~450 MB) |
 | Bidirectional BFS | 22 ms |
 | `/api/map` (45k points) | 15 ms, 1.72 MB, ETag-cached |
 | Article fetch | 3.7 ms, 272/s sustained |

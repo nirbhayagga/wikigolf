@@ -175,7 +175,7 @@ Two independent images that share no code:
 
 **Viewer** (`Dockerfile` + `docker-compose.yml`) installs **only visualization dependencies** and copies just `04_app.py`, `05_export_png.py`, and `config.yaml`; `data/` is mounted read-only at runtime with results pre-baked. Keep those two scripts free of RAPIDS/igraph/scipy imports or the image breaks.
 
-**Game** (`Dockerfile.game` + `docker-compose.game.yml`) is the Rust `serve` binary on debian-slim, with no Python at all, behind Traefik with Let's Encrypt. Measured at full enwiki scale: **3.79 GB RSS**, ~1 min to load 231.7M edges into CSR, then 22 ms for a bidirectional BFS and 17 ms for `/api/meta`. Load-bearing:
+**Game** (`Dockerfile.game` + `docker-compose.game.yml`) is the Rust `serve` binary on debian-slim, with no Python at all, behind Traefik with Let's Encrypt. Measured at full enwiki scale: **7.1 GB RSS** (grown from 3.79 GB as categories, aliases, sizes and the title+alias search index moved into memory; `--no-alias-search` saves ~450 MB), ~2 min to load, then 22 ms for a bidirectional BFS and 17 ms for `/api/meta`. **When the server starts loading something new, re-measure the peak and keep 2-3 GB of container-limit headroom** — a cgroup kill mid-load looks like a container that never comes up, with empty logs. Load-bearing:
 
 - **`--host 0.0.0.0`.** The binary defaults to `127.0.0.1`, which inside a container is unreachable from the host.
 - **`--trust-proxy` is required behind a proxy and unsafe without one.** Without it every request appears to come from the proxy's IP and the per-IP rate limiter throttles all users as one bucket; with it on a directly-exposed port, a client can forge `X-Forwarded-For` and defeat rate limiting entirely.
