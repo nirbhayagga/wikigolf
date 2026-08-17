@@ -130,6 +130,20 @@ impl Pools {
         None
     }
 
+    /// Draw from one exact par bucket — how a course hole gets its designed
+    /// par. Full bucket range (no route-count halving): a round mixes skill
+    /// levels by construction.
+    pub fn pick_par(&self, d: Difficulty, par: usize, rng: &mut Rng) -> Option<(u32, u32)> {
+        let (_, min_len) = d.rules();
+        let off = par.checked_sub(min_len)?;
+        let b = self.buckets.get(diff_index(d))?.get(off)?;
+        if b.is_empty() {
+            return None;
+        }
+        let (s, t, _) = b[(rng.next_u64() % b.len() as u64) as usize];
+        Some((s, t))
+    }
+
     /// One line per difficulty for startup logs and the generator.
     pub fn summary(&self) -> String {
         (0..3)
