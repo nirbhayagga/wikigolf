@@ -262,7 +262,8 @@ layout:
                         # by PageRank and places the rest at their neighbours
 community:
   objective: "modularity"
-  resolution: 1.0       # the map's granularity dial. 1.0 gives ~25 usable
+  resolution: 6.0       # the map's granularity dial — 6.0 is the shipped
+                        # enwiki value (2,970 communities). 1.0 gives ~25 usable
                         # communities for 7.2M articles, which is too coarse to
                         # read as regions; raise max_categories with it.
   top_n: 20             # communities sent to the LLM for labelling
@@ -293,24 +294,35 @@ python python/01_graph_compute.py --reset  # recompute from scratch
   an uncapped render at 4K with thousands of communities would ask for hundreds
   of gigabytes.
 
-## The wiki-race game
+## WikiGolf — the game
 
-A second Rust binary serves a wiki-race game off the same Parquet: find the
-shortest link path between two articles, racing against the optimal route the
-server computes on its own copy of the graph.
+A second Rust binary serves **WikiGolf** off the same Parquet: golf across
+Wikipedia, reaching the goal article in the fewest clicks. **Par is the
+shortest route that actually exists** — the server computes it on its own
+copy of the graph, so the optimal it reports is optimal in the world the
+player is playing in. Par ⛳, Bogey, Double bogey.
 
 ```bash
 cargo build --release --bin serve
 ./target/release/serve --data data --state ./state --host 0.0.0.0 --port 8080
 ```
 
-Measured at full enwiki scale: **3.79 GB resident**, about a minute to build the
-forward and reverse CSR, then **22 ms for a bidirectional BFS** and 15 ms for the
-map endpoint. It reproduces Six Degrees of Wikipedia exactly on the same data.
+What it serves: a seeded **daily** in three difficulties with streaks and a
+Wordle-style share grid; a 3- or 9-hole **round** with one scorecard; random
+races drawn from precomputed **pools** with route-count-aware difficulty; a
+rationed exact-distance **compass**; title+alias **search** (sub-ms); links
+annotated with categories, short descriptions, read counts and infobox
+glyphs; and the force-layout **map** with the race drawn across it.
 
-`nodes.parquet` is optional — without it the game degrades to a link list instead
-of refusing to start. `redirects.parquet` is optional too and only adds
-search-by-alias.
+Measured at full enwiki scale: **7.1 GB resident** (~2 min to load; the
+title+alias search index is the largest optional slice — `--no-alias-search`
+saves ~450 MB), then **22 ms per bidirectional BFS**. Every data file except
+`titles`/`edges` is optional and degrades gracefully.
+
+**Head-to-head duels exist but ship dark**: rooms, spoken-aloud codes and a
+websocket relay are compiled in, mounted only under `--enable-duels`, and no
+UI references them yet — multiplayer costs kilobytes per room, so the
+engineering is banked while the feature waits for players.
 
 ## Docker deployment
 
@@ -319,7 +331,7 @@ Two independent images that share no code.
 **Viewer** — Panel + Datashader, visualization dependencies only:
 
 ```bash
-WEBSOCKET_ORIGIN=wiki.example.com docker-compose up -d   # http://localhost:5006
+VIEW_HOST=map.example.com docker compose -f docker-compose.yml up -d
 ```
 
 **Game** — the Rust binary on debian-slim, no Python, behind an existing Traefik:
@@ -333,8 +345,24 @@ is required behind a proxy and unsafe without one (a client can otherwise forge
 `X-Forwarded-For` past the rate limiter), and `--state` must point somewhere
 writable that is **not** the data directory, which deployments mount read-only.
 
-Data is mounted, never baked into either image: it is ~1.2 GiB and changes on a
+Data is mounted, never baked into either image: it is ~1.6 GB and changes on a
 completely different cadence than the code.
+
+## The static build — the whole game as files
+
+`static_export` emits WikiGolf as a tree of plain files: article shards,
+hash-bucketed search, the map, and every daily and round pre-generated N days
+ahead with pars and route counts baked in. The page detects the tree and
+swaps its fetch layer — no server process anywhere.
+
+```bash
+cargo run --release --bin static_export -- --data data --out static_site --days 45
+```
+
+Host it free on Cloudflare Pages (`wrangler pages deploy static_site`), put a
+domain on it, done: ~$10/year total. What the files cannot answer is hidden
+rather than broken: custom-pair races, the compass and leaderboards need the
+live server. Re-export before `--days` runs out or the daily goes stale.
 
 ## Acknowledgments
 
