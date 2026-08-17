@@ -108,12 +108,11 @@ impl Pools {
             return None;
         }
         let mut r = rng.next_u64() % total;
-        for i in 0..PAR_SPAN {
-            let b = &self.buckets[di][i];
+        for (b, &weight) in self.buckets[di].iter().zip(&WEIGHTS[di]) {
             if b.is_empty() {
                 continue;
             }
-            if r < WEIGHTS[di][i] {
+            if r < weight {
                 let (lo, hi) = match d {
                     // Halves overlap at the midpoint so a 1-element bucket
                     // serves every difficulty.
@@ -125,7 +124,7 @@ impl Pools {
                 let (s, t, _) = b[k];
                 return Some((s, t));
             }
-            r -= WEIGHTS[di][i];
+            r -= weight;
         }
         None
     }
@@ -298,8 +297,8 @@ impl Pools {
             }
         }
         let mut pools = Pools::empty();
-        for di in 0..3 {
-            for (off, bucket) in raw[di].iter_mut().enumerate() {
+        for (di, row) in raw.iter_mut().enumerate() {
+            for (off, bucket) in row.iter_mut().enumerate() {
                 pools.set(diff_from_index(di), off, std::mem::take(bucket));
             }
         }
@@ -414,7 +413,7 @@ pub fn attach_routes(
                     let mut pf = PathFinder::new(graph.len());
                     let rev = &graph.reverse;
                     let banned = move |v: u32| {
-                        ban_degree.map_or(false, |limit| rev.degree(v) > limit)
+                        ban_degree.is_some_and(|limit| rev.degree(v) > limit)
                     };
                     let mut out: [Vec<Pair>; PAR_SPAN] = Default::default();
                     loop {

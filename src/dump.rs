@@ -234,7 +234,7 @@ impl Progress {
     }
 
     pub fn tick(&self, n: u64) {
-        if n % self.every == 0 {
+        if n.is_multiple_of(self.every) {
             let secs = self.start.elapsed().as_secs_f64();
             let rate = if secs > 0.0 { n as f64 / secs } else { 0.0 };
             eprint!("\r   {} {:>10} pages  ({:.0}/s)", self.label, n, rate);
