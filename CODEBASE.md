@@ -74,6 +74,12 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
   post-clean gave 30% coverage; raw gives 97%.
 - **Parse errors and decompressor exit codes are fatal.** A truncated `.bz2`
   otherwise looks exactly like a clean end-of-dump.
+- **Run ids are STRINGS on the wire.** They span the full u64 range, and
+  JavaScript parses JSON numbers as doubles — everything past 2^53 rounds
+  silently, which broke compass/routes/submit intermittently for as long as
+  each existed (curl and python round-trip exactly, so no server-side test
+  could see it). Any future id or large count that a browser echoes back
+  must ship as a string.
 - **`max_blocking_threads(8)`.** Each concurrent graph request holds a 72 MB
   PathFinder (130 MB while counting paths). Tokio's 512-thread default was
   37 GB and an instant OOM.
