@@ -42,7 +42,7 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 | `titles.rs` | 215 | Title normalization — MediaWiki's own rules. Decides whether two link strings are the same article. Also category extraction and maintenance-category filtering. |
 | `wikitext.rs` | 318 | Comment/nowiki/ref/template stripping and `[[wikilink]]` extraction. Every removal is behind a flag. |
 | `output.rs` | 217 | Parquet writers. The parser emits final artifacts directly, so nothing downstream re-reads a multi-GB CSV. |
-| `graph.rs` | 687 | CSR link graph plus the search algorithms: bidirectional BFS, shortest-path counting, reverse distance maps. |
+| `graph.rs` | ~800 | CSR link graph plus the search algorithms: bidirectional BFS, meet-in-the-middle shortest-path counting (60-90x the single-direction version; oracle-tested against it), reverse distance maps. |
 | `game.rs` | 814 | Game state: map coordinates, puzzle generation, search ranking, hub bans, categories, aliases, region naming. Search runs on a prebuilt index (exact by binary search, popularity-ordered scan with early exit) — sub-ms for typical queries vs the old ~100 ms full scan. |
 | `pools.rs` | ~560 | Precomputed puzzle pools: parallel BFS bucketing by (difficulty, par) with reservoir sampling, route counting on survivors only, parquet round-trip with a dump fingerprint that refuses stale files, weighted draws (hard from few-routes pairs, easy from many). |
 | `runs.rs` | 466 | Run issuing, path validation, compass charges, leaderboard. Never trusts a submitted score; re-walks the submitted path. |
@@ -107,7 +107,7 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 | `/api/puzzle` | 41 ms | Also accepts `from`/`to` (ids) or `from_title`/`to_title`. |
 | `/api/daily` | 41 ms | Seeded by the day. |
 | `/api/compass` | 1.4 s first per goal | Then cached; charges scale with par. |
-| `/api/routes` | 31–142 ms | Shortest-route count, asked after the race. |
+| `/api/routes` | ~1-10 ms | Shortest-route count (meet-in-the-middle; was 31-142 ms single-direction), asked after the race. |
 | `/api/dist` | free | Clicks histogram of one daily board — the "38% made par" line. |
 | `/api/course` | ~9x41 ms | 3- or 9-hole round: exact-par holes from the pools, seeded per day, each hole a normal issued run. |
 | `/api/submit` · `/api/leaderboard` | — | Re-walks the submitted path; never trusts a score. |
