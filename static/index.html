@@ -122,6 +122,10 @@
   .brand { display:flex; align-items:baseline; gap:9px; margin-bottom:12px; }
   .brand h1 { margin:0; font-size:15px; letter-spacing:2.2px; font-weight:700; }
   .brand span { color:var(--faint); font-size:11px; font-family:var(--mono); }
+  .pickers { align-items:center; gap:10px; margin-top:6px; }
+  .pickers label { display:flex; align-items:center; gap:5px; }
+  .pickers select, .pickers input { padding:3px 6px; font-size:12px; max-width:70px; }
+  #dnum { width:52px; }
   .credits { margin-top:8px; font-size:10px; color:var(--faint); text-align:center; }
   .credits a { color:var(--faint); }
   .row { display:flex; gap:7px; }
@@ -440,16 +444,27 @@
       <button class="primary" id="new" style="flex:1">Random race</button>
       <button id="daily" style="flex:1">&#9733; Daily</button>
       <button id="round" style="flex:1" title="A scored course of holes — one card at the end">&#9971; Round</button>
-      <select id="rholes" title="Holes per round" aria-label="Holes per round" style="max-width:52px">
-        <option value="3" selected>3</option>
-        <option value="9">9</option>
-      </select>
-      <input id="dnum" placeholder="#" title="Play a past daily by number (archive plays don't advance streaks)" style="max-width:46px">
-      <select id="ddiff" title="Daily difficulty" aria-label="Daily difficulty" style="max-width:74px">
-        <option value="medium" selected>med</option>
-        <option value="easy">easy</option>
-        <option value="hard">hard</option>
-      </select>
+    </div>
+    <!-- The pickers live under the buttons, not beside them: six controls in
+         one flex row collapsed on a 360px phone and squeezed the difficulty
+         select out of existence. -->
+    <div class="row pickers">
+      <label class="lbl2">daily
+        <select id="ddiff" title="Daily difficulty" aria-label="Daily difficulty">
+          <option value="medium" selected>med</option>
+          <option value="easy">easy</option>
+          <option value="hard">hard</option>
+        </select>
+      </label>
+      <label class="lbl2">round
+        <select id="rholes" title="Holes per round" aria-label="Holes per round">
+          <option value="3" selected>3</option>
+          <option value="9">9</option>
+        </select>
+      </label>
+      <label class="lbl2">replay
+        <input id="dnum" placeholder="#" title="Play a past daily or round by number (archive plays don't advance streaks)">
+      </label>
     </div>
 
     <div id="hubctl">
