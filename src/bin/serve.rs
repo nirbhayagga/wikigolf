@@ -438,12 +438,33 @@ struct PuzzleResponse {
     number: Option<u64>,
     /// Server-issued handle for this race. Scores are only accepted against
     /// one of these, so the clock and the puzzle terms are ours, not the
-    /// client's.
-    run: u64,
+    /// client's. A STRING on the wire, never a JSON number: ids span the
+    /// full u64 range and JavaScript parses JSON numbers as doubles, which
+    /// silently round everything past 2^53 — the id the page echoed back
+    /// matched nothing, and compass, routes and submit all failed with
+    /// "unknown or expired run" for months of ghost reports. Strings are
+    /// opaque to the page and exact by construction.
+    run: String,
+}
+
+/// Accept a run id as either a JSON string (current pages) or a number
+/// (pages cached from before the string migration).
+fn de_run<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum RunId {
+        S(String),
+        N(u64),
+    }
+    match RunId::deserialize(d)? {
+        RunId::N(n) => Ok(n),
+        RunId::S(s) => s.parse().map_err(serde::de::Error::custom),
+    }
 }
 
 #[derive(Deserialize)]
 struct SubmitRequest {
+    #[serde(deserialize_with = "de_run")]
     run: u64,
     path: Vec<u32>,
     #[serde(default)]
@@ -829,7 +850,7 @@ fn issue(
         ban_degree: p.ban_degree,
         difficulty,
         number,
-        run,
+        run: run.to_string(),
     }
 }
 
@@ -915,6 +936,7 @@ async fn route_count(
 
 #[derive(Deserialize)]
 struct CompassRequest {
+    #[serde(deserialize_with = "de_run")]
     run: u64,
     /// The article the player is standing on. Only its links are measured —
     /// handing back the whole distance map would let a client spend one charge
