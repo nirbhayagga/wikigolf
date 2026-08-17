@@ -280,6 +280,40 @@ fn search_ranked(
 /// handful of candidates.
 const PLAYABLE_POOL: usize = 50_000;
 
+/// Editorial curation of race endpoints: `endpoint_deny.txt` in the data
+/// directory, one article title per line, `#` for comments. Titles resolve
+/// through the parser's own normalization and redirect map, so "USA" denies
+/// United States. Denied articles never appear as *generated* endpoints
+/// (random, daily, topic — and the pools generator honours the same list);
+/// a player picking one for a custom race is their own business.
+///
+/// Missing file means no curation, which is where every wiki starts. A line
+/// naming no article warns and is skipped — a typo must not silently curate
+/// nothing.
+pub fn load_endpoint_deny(data_dir: &Path, graph: &Graph) -> std::collections::HashSet<u32> {
+    let mut deny = std::collections::HashSet::new();
+    let path = data_dir.join("endpoint_deny.txt");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return deny;
+    };
+    for line in text.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        match graph.resolve(t) {
+            Some(id) => {
+                deny.insert(id);
+            }
+            None => eprintln!("  endpoint_deny.txt: no article called \"{t}\" — skipped"),
+        }
+    }
+    if !deny.is_empty() {
+        eprintln!("  endpoint curation: {} articles denied as endpoints", deny.len());
+    }
+    deny
+}
+
 /// Endpoints must be articles a player has a chance of recognising.
 ///
 /// A fixed in-degree floor does not survive a change of wiki: 25 inbound
@@ -291,9 +325,9 @@ const PLAYABLE_POOL: usize = 50_000;
 /// from a bare `Graph` — it must not go through `Game::load`, which refuses
 /// to start over a stale pools file, the very thing the generator exists to
 /// replace.
-pub fn playable_pool(graph: &Graph) -> Vec<u32> {
+pub fn playable_pool(graph: &Graph, deny: &std::collections::HashSet<u32>) -> Vec<u32> {
     let mut ranked: Vec<u32> = (0..graph.len() as u32)
-        .filter(|&v| graph.forward.degree(v) >= 10)
+        .filter(|&v| graph.forward.degree(v) >= 10 && !deny.contains(&v))
         .collect();
     let keep = PLAYABLE_POOL.min(ranked.len().div_ceil(4));
     if keep > 0 && keep < ranked.len() {
@@ -421,7 +455,7 @@ impl Game {
         let n_articles = graph.len();
         let layout = Layout::load(data_dir, graph.len())?;
 
-        let playable = playable_pool(&graph);
+        let playable = playable_pool(&graph, &load_endpoint_deny(data_dir, &graph));
 
         let mut hubs: Vec<u32> = (0..graph.len() as u32).collect();
         let k = MAX_HUBS.min(hubs.len());
@@ -913,6 +947,25 @@ mod tests {
             search_ranked(&idx, &|v| degrees[v as usize], "topic", 5),
             search_reference(&titles, &degrees, "topic", 5),
         );
+    }
+
+    #[test]
+    fn endpoint_deny_resolves_skips_and_comments() {
+        use crate::graph::tests_support::graph;
+        let g = graph(3, &[(0, 1), (1, 2), (2, 0)]);
+        let dir = std::env::temp_dir().join(format!("wp-deny-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("endpoint_deny.txt"),
+            "# curated out\nA1\n\nNo Such Article\n",
+        )
+        .unwrap();
+        let deny = load_endpoint_deny(&dir, &g);
+        assert_eq!(deny.len(), 1, "one real title, one typo, one comment");
+        assert!(deny.contains(&1));
+        // No file at all is no curation.
+        assert!(load_endpoint_deny(&dir.join("nope"), &g).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
