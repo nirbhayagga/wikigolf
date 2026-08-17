@@ -60,6 +60,15 @@ cargo build --release --bin serve
 cargo build --release --bin pools
 ./target/release/pools --data data
 
+# Static build: the whole game as files for free hosting (Cloudflare Pages).
+# Needs pools.parquet for the Random button; exports dailies N days ahead,
+# after which the site goes stale without a re-export.
+cargo build --release --bin static_export
+./target/release/static_export --data data --out static_site --days 45
+
+# Head-to-head duels exist but are DARK: routes mount only with
+# --enable-duels, and no UI references them. Kilobytes per room when on.
+
 docker compose -f docker-compose.game.yml up -d         # game behind Traefik (.env: RACE_HOST etc.)
 docker compose -f docker-compose.game.direct.yml up -d  # game on a bare host port
 docker compose -f docker-compose.yml up -d              # map viewer behind Traefik (VIEW_HOST)
