@@ -483,6 +483,9 @@
       <label class="gtog" title="Group links by the map region they belong to">
         <input type="checkbox" id="lgroup" checked> group
       </label>
+      <label class="lbl2" title="Categories and link counts on each row">
+        <input type="checkbox" id="ldetails" checked> details
+      </label>
       <select id="lsort" title="Sort links">
         <option value="deg">Most linked</option>
         <option value="read">Most read</option>
@@ -949,8 +952,18 @@ function paintLinks() {
 }
 
 /// One row. Shared by the flat and grouped renderings so they cannot drift.
+///
+/// Noise budget: a row shows at most the name, one context line, and two
+/// tags. Extra data earns its place contextually instead of piling on —
+/// read counts appear only when sorting by Most read (they are the sort
+/// key, so hiding them would make the order look arbitrary), and the
+/// details toggle strips rows to bare names for players who know the
+/// territory. The compass and banned tags always show: they are gameplay,
+/// not decoration.
 function linkRow(l) {
     const el = document.createElement('button');
+    const detail = $('ldetails').checked;
+    const byReads = $('lsort').value === 'read';
     el.className='link'; el.disabled = !!l.banned;
     if (l.banned) el.title = `Banned at this difficulty: ${l.in_degree.toLocaleString()} inbound links`;
     el.innerHTML =
@@ -959,7 +972,7 @@ function linkRow(l) {
         // The context a bare link list otherwise has none of. In a real
         // article the surrounding sentence tells you what a link is; here the
         // article's own categories do it in three words.
-        (l.cats && l.cats.length
+        (detail && l.cats && l.cats.length
           ? `<span class="cats">${esc(l.cats.slice(0,3).join(' · '))}</span>` : '') +
       `</span>`+
       (l.banned ? `<span class="tag lock">&#128274; hub</span>` : '')+
@@ -967,7 +980,9 @@ function linkRow(l) {
         ? `<span class="tag ${state.dist[l.id] <= 1 ? 'near' : 'far'}">`+
           (state.dist[l.id] === null ? '&gt;6' : `${state.dist[l.id]} to go`)+
           `</span>` : '')+
-      `<span class="tag">${l.in_degree.toLocaleString()}</span>`;
+      (byReads
+        ? `<span class="tag">${fmtViews(l.views||0)} reads</span>`
+        : (detail ? `<span class="tag">${l.in_degree.toLocaleString()}</span>` : ''));
     if (!l.banned) el.onclick = () => go(l.id);
     return el;
 }
@@ -1420,6 +1435,7 @@ $('cgo').onclick = async () => {
 // no debounce needed. Repainting a few hundred rows is imperceptible.
 $('lfilter').addEventListener('input', paintLinks);
 $('lsort').addEventListener('change', paintLinks);
+$('ldetails').addEventListener('change', paintLinks);
 $('lgroup').addEventListener('change', e => { state.group = e.target.checked; paintLinks(); });
 
 let timer=null;

@@ -1147,6 +1147,32 @@ async fn serve() -> Result<()> {
         });
     }
 
+    // Prewarm the daily's compass map. The first compass press on the daily
+    // otherwise pays the full reverse BFS (~1.4 s at enwiki scale) that
+    // everyone after gets from the cache — and the daily is deterministic,
+    // so its goal is knowable the moment the graph is up. Seed formula must
+    // match daily()'s exactly.
+    {
+        let app = state.clone();
+        tokio::task::spawn_blocking(move || {
+            let day = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|t| t.as_secs() / 86_400)
+                .unwrap_or(DAILY_EPOCH_DAY);
+            let seed = day.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                ^ (Difficulty::Medium as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            if let Some(p) = puzzle_from_seed(&app, Difficulty::Medium, seed, None) {
+                let dist = Arc::new(
+                    app.with_finder(|g, pf| pf.distances_to(&g.graph, p.goal, COMPASS_DEPTH)),
+                );
+                let mut cache = app.compass.lock().unwrap();
+                if !cache.iter().any(|(g, _)| *g == p.goal) {
+                    cache.push((p.goal, dist));
+                }
+            }
+        });
+    }
+
     let app = Router::new()
         .route("/", get(index))
         .route("/api/meta", get(meta))
@@ -1167,6 +1193,11 @@ async fn serve() -> Result<()> {
         // bother minting an identity for a request we are about to refuse.
         .layer(middleware::from_fn_with_state(state.clone(), identify))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
+        // Outermost: gzip. The page is ~90 KB of HTML+JS and /api/map is
+        // 1.7 MB of JSON; both compress 3-4x, which on mobile is the
+        // difference between instant and noticeable. CPU cost is microseconds
+        // against responses this compressible.
+        .layer(tower_http::compression::CompressionLayer::new())
         .with_state(state);
 
     let addr = format!("{}:{}", args.host, args.port);
@@ -1260,6 +1291,7 @@ mod page_tests {
             "/api/regions",
             "$('replay').onclick",
             "$('tgo').onclick",
+            "$('ldetails').addEventListener",
             "function reissueRun",
             "async function apiRun",
             "wr-streak",
