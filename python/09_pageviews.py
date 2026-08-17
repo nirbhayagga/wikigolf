@@ -122,9 +122,14 @@ def main():
     in_en = False
     with bz2.open(src, "rt", encoding="utf-8", errors="replace") as f:
         for line in f:
-            # domain title views agent_breakdown
+            # Format (pageview_complete):
+            #   wiki title page_id access_method monthly_total daily_string
+            # The count is column 4. Column 2 is the PAGE ID — summing that
+            # instead once produced 1.3 quadrillion "views" topped by
+            # Hyphen-minus, which is what a units mistake looks like when
+            # nobody checks the output against common sense.
             parts = line.split(" ")
-            if len(parts) < 3 or parts[0] != "en.wikipedia":
+            if len(parts) < 5 or parts[0] != "en.wikipedia":
                 # The dump is sorted by wiki, so once the en.wikipedia block
                 # has been seen and left, everything after it is other
                 # projects — stopping here skips the majority of a 5+ GB
@@ -142,7 +147,9 @@ def main():
             if i is None:
                 continue
             try:
-                views[i] += int(parts[2])
+                # Rows repeat per access method (desktop / mobile-web / app);
+                # summing them per title is the correct monthly total.
+                views[i] += int(parts[4])
             except ValueError:
                 continue
             matched += 1
