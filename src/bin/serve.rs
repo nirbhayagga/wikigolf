@@ -26,6 +26,7 @@ use wiki_parser::game::{course_seed, daily_seed, today_day, Difficulty, Game, Rn
 use wiki_parser::graph::PathFinder;
 use wiki_parser::identity::Identity;
 use wiki_parser::ratelimit::RateLimiter;
+use wiki_parser::duel::{Duels, JoinError};
 use wiki_parser::runs::{Registry, RunSpec};
 
 #[derive(Parser, Debug)]
@@ -61,6 +62,13 @@ struct Args {
     #[arg(long)]
     secure_cookies: bool,
 
+    /// Mount the head-to-head duel routes (rooms + websockets). Dark by
+    /// default: no UI references them, and a flagless server carries zero
+    /// multiplayer surface. Flip it when the analytics say two players are
+    /// ever online at the same time.
+    #[arg(long)]
+    enable_duels: bool,
+
     /// Leave redirect aliases out of the search index, saving ~450 MB of
     /// resident memory (measured total drops from ~7.1 GB to ~6.6 GB at
     /// enwiki scale). Search still covers every title; "NYC" just stops
@@ -87,6 +95,8 @@ struct App {
     secure_cookies: bool,
     /// Usage counters, flushed hourly to analytics.jsonl in the state dir.
     analytics: Analytics,
+    /// Head-to-head rooms; None unless --enable-duels. Kilobytes when on.
+    duels: Option<Duels>,
     /// Distance-to-goal maps, keyed by goal. One is ~7 MB at enwiki scale and
     /// costs a full reverse BFS, so they are kept rather than recomputed —
     /// and everyone racing the daily shares a single entry.
@@ -1106,6 +1116,130 @@ async fn course(
     }
 }
 
+/// Create a duel room around a fresh easy puzzle. Returns the room code
+/// to read aloud and the race terms both players will get.
+async fn duel_new(State(s): State<Shared>) -> Response {
+    let Some(duels) = &s.duels else {
+        return err("duels are not enabled").into_response();
+    };
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(1);
+    let s2 = s.clone();
+    let p = tokio::task::spawn_blocking(move || {
+        s2.with_finder(|g, pf| g.seeded_puzzle(pf, Difficulty::Easy, seed))
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(p) = p else {
+        return err("could not generate a duel race").into_response();
+    };
+    match duels.create(p.start, p.goal, p.optimal, seed) {
+        Some(code) => Json(serde_json::json!({
+            "code": code,
+            "start": article_ref(&s.game, p.start),
+            "goal": article_ref(&s.game, p.goal),
+            "par": p.optimal,
+        }))
+        .into_response(),
+        None => err("room limit reached").into_response(),
+    }
+}
+
+/// One socket per player. The server relays frames with the sender's name
+/// attached and referees presence; duel paths are never leaderboard input,
+/// so they are not re-walked.
+async fn duel_ws(
+    State(s): State<Shared>,
+    AxPath(code): AxPath<String>,
+    Query(q): Query<HashMap<String, String>>,
+    ws: axum::extract::ws::WebSocketUpgrade,
+) -> Response {
+    let Some(_) = &s.duels else {
+        return err("duels are not enabled").into_response();
+    };
+    let name = q
+        .get("name")
+        .map(|n| wiki_parser::runs::clean_nickname(n))
+        .unwrap_or_else(|| "anonymous".into());
+    ws.on_upgrade(move |socket| duel_session(s, code, name, socket))
+}
+
+async fn duel_session(
+    s: Shared,
+    code: String,
+    name: String,
+    socket: axum::extract::ws::WebSocket,
+) {
+    use axum::extract::ws::Message;
+    use futures_util::{SinkExt, StreamExt};
+    let duels = s.duels.as_ref().expect("routes only mounted when enabled");
+
+    let (terms, tx, mut rx) = match duels.join(&code, &name) {
+        Ok(v) => v,
+        Err(e) => {
+            let msg = match e {
+                JoinError::NoSuchRoom => "no such room",
+                JoinError::Full => "room is full",
+                JoinError::NameTaken => "name already taken in this room",
+            };
+            let (mut sink, _) = socket.split();
+            let _ = sink
+                .send(Message::Text(
+                    serde_json::json!({"type":"error","error":msg}).to_string().into(),
+                ))
+                .await;
+            return;
+        }
+    };
+
+    let (mut sink, mut stream) = socket.split();
+    let hello = serde_json::json!({
+        "type": "room",
+        "start": article_ref(&s.game, terms.0),
+        "goal": article_ref(&s.game, terms.1),
+        "par": terms.2,
+    });
+    if sink.send(Message::Text(hello.to_string().into())).await.is_err() {
+        duels.leave(&code, &name);
+        return;
+    }
+
+    // Fan the room's broadcast to this socket…
+    let mut send_task = tokio::spawn(async move {
+        while let Ok(frame) = rx.recv().await {
+            if sink.send(Message::Text(frame.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+    // …and this socket's frames to the room, name attached server-side so
+    // nobody speaks as anyone else.
+    let tx2 = tx.clone();
+    let name2 = name.clone();
+    let mut recv_task = tokio::spawn(async move {
+        while let Some(Ok(Message::Text(t))) = stream.next().await {
+            if t.len() > 512 {
+                continue; // relays are tiny; oversized frames are nonsense
+            }
+            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&t) {
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("name".into(), serde_json::json!(name2));
+                    let _ = tx2.send(v.to_string());
+                }
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = &mut send_task => recv_task.abort(),
+        _ = &mut recv_task => send_task.abort(),
+    }
+    duels.leave(&code, &name);
+}
+
 async fn map_points(
     State(s): State<Shared>,
     headers: header::HeaderMap,
@@ -1232,7 +1366,11 @@ async fn serve() -> Result<()> {
         secure_cookies: args.secure_cookies,
         compass: Mutex::new(Vec::new()),
         analytics: Analytics::default(),
+        duels: args.enable_duels.then(Duels::default),
     });
+    if state.duels.is_some() {
+        eprintln!("  duels: ENABLED (dark feature — no UI references these routes)");
+    }
 
     // Hourly usage line. Append-only, best-effort: an unwritable file is
     // reported once and the game keeps serving — analytics must never be the
@@ -1286,7 +1424,16 @@ async fn serve() -> Result<()> {
         });
     }
 
+    let duel_routes = if state.duels.is_some() {
+        Router::new()
+            .route("/api/duel/new", post(duel_new))
+            .route("/api/duel/ws/{code}", get(duel_ws))
+    } else {
+        Router::new()
+    };
+
     let app = Router::new()
+        .merge(duel_routes)
         .route("/", get(index))
         .route("/og.jpg", get(og_image))
         .route("/api/meta", get(meta))
