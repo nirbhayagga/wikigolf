@@ -8,7 +8,7 @@ A pipeline that turns the English Wikipedia XML dump into an interactive force-d
 
 This is a **content project** — a public explorable map, quotable statistics, and a poster-grade render — so numbers stated publicly have to survive being checked. That is why the parser is strict about what counts as an article.
 
-`CODEBASE.md` is the per-file reference: every Rust module and Python script, every data file with its real size, the endpoint surface, and the measurements. It is tracked, unlike the generated audit it replaced.
+`CODEBASE.md` is the per-file reference: every Rust module and Python script, every data file with its real size, the endpoint surface, and the measurements. It is tracked, unlike the generated audit it replaced. `RUNBOOK.html` (also tracked) is the operational side: deploy procedures, machine split, the canonical data manifest, and what went wrong before. Keep all three in step when behavior changes — and keep RUNBOOK.html a local file, never published as an artifact.
 
 ## Commands
 
@@ -35,6 +35,9 @@ export KVIKIO_COMPAT_MODE=ON   # Fedora: disables GPU Direct Storage
 python python/01_graph_compute.py              # phases 0-3, checkpointed
 python python/01_graph_compute.py --sample 0.01  # 1% of edges: the dev loop
 python python/01_graph_compute.py --reset      # wipe caches, recompute
+python python/01_graph_compute.py --reset-layout --phases 2,3
+                                               # redo Leiden + merge; KEEPS the
+                                               # 10-hour cache_sfdp_raw.npz
 python python/07_incremental.py --status       # which caches exist, sizes
 python python/07_incremental.py --reset        # wipe caches without recomputing
 
@@ -44,8 +47,16 @@ GEMINI_API_KEY=... python python/03_name_clusters.py
 python python/06_community_stats.py
 panel serve python/04_app.py --show
 python python/05_export_png.py --width 4096 --height 2160
+python python/08_export_gephi.py               # CSVs for the manual LinLog test
+python python/09_pageviews.py                  # joins external pageview counts
+
+# Wiki-race game server (loads titles+edges; the rest degrade gracefully)
+cargo build --release --bin serve
+./target/release/serve --data data --state <writable-dir> --host 127.0.0.1 --port 8080
 
 docker-compose up -d    # viewer only, on :5006
+docker compose -f docker-compose.game.yml up -d         # game behind Traefik (.env: RACE_HOST etc.)
+docker compose -f docker-compose.game.direct.yml up -d  # game on a bare host port
 ```
 
 The Rust parser has unit + fixture tests (`cargo test`). The Python pipeline has none; validate it against **Simple English Wikipedia** (~339 MB dump, 284k articles), which runs end-to-end on a laptop in ~85 s. Prefer that over `--sample 0.01`, which shatters the graph into disconnected fragments and so cannot validate layout or community quality.
@@ -72,7 +83,7 @@ Verified end-to-end on Simple English Wikipedia: parser ~110 s, pipeline 60 s, 2
 
 **Full English Wikipedia (20260801) is parsed:** 7,219,290 articles / 231,681,569 edges, 46.4 min, 3.10 GB peak RSS. The old pipeline's 28M vertices / 482M edges are gone. Outputs total ~1.6 GB with categories and sizes, so copy the Parquet between machines, never the 26.67 GB dump. The re-parse for categories reproduced `titles.parquet` and `edges.parquet` byte-for-byte: parsing is deterministic, ids are stable for the same dump.
 
-**Phase 2 has run at full scale.** Symmetrization gives 419,049,910 edges in 26 s. A 10% backbone is 721,929 nodes / 83,399,460 induced edges (19.9% of all). What is still unproven is a *full* (`backbone_frac: 0`) layout, and whether either produces a map with real structure — see the density note below.
+**Phase 2 has run at full scale, both ways.** Symmetrization gives 419,049,910 edges in 26 s. The full (`backbone_frac: 0`) layout completed on the PC in ~10 h: 7,216,559 of 7,219,290 articles placed individually (99.96% — the rest are outside the giant component). Its raw positions live in `cache_sfdp_raw.npz` (3.5 GB), **the most expensive artifact in the project** — `--reset-layout` deliberately preserves it, and a rerun that prints anything other than "Reusing raw SFDP positions" is about to redo ten hours and should be killed. Leiden then ran at resolution 6.0 (2,970 communities, largest 2.9%); that resolution is tracked in `config.yaml` because a `git reset --hard` once reverted the working-tree edit and the next merge silently shipped the coarse res-1 map. The canonical merged map is `data/nodes.parquet` (res-6, 2,970 distinct communities — count them to identify a stray copy).
 
 **A new dump means a full re-run.** Article ids are dense `0..N-1` assigned in parse order, so a single added or removed article shifts every id after it: parse, PageRank, and layout all have to be redone, and anything that stored an id (leaderboard rows, saved puzzles) is silently wrong afterwards. Making refreshes incremental means persisting a title→id map and only appending ids for new articles, which would also let the layout warm-start from the previous positions. That work has not been done.
 
@@ -112,7 +123,7 @@ Things that will bite:
 - **Lay out the giant component only.** A force layout applies no attraction between disconnected components and flings them arbitrarily far: on simplewiki 99% of articles landed within 55 units while stragglers reached 1,400, leaving the map on 3.9% of the frame.
 - **`GraphView.get_2d_array` returns only the vertices the view keeps**, not an array of size `n`. Map it back with an explicit index, not a boolean mask.
 
-**Density is the open problem at enwiki scale.** The 10% backbone (721,929 nodes / 83.4M induced edges, average degree ~231) laid out to a density statistically indistinguishable from uniform random points — max/mean 2.2x against 2.1x for a random disc. simplewiki's backbone under identical settings scores 6.4x. SFDP's `C` and `p` were swept and do not help (`p=3` → 4.8x, `p=4` → 4.0x, i.e. worse; `C=0.05` → unchanged). Treat a max/mean near 2 in the exporter's density line as "the graph was too dense to unfold", not as a rendering problem.
+**Density is the open problem at enwiki scale.** The 10% backbone (721,929 nodes / 83.4M induced edges, average degree ~231) laid out to a density statistically indistinguishable from uniform random points — max/mean 2.2x against 2.1x for a random disc. simplewiki's backbone under identical settings scores 6.4x. SFDP's `C` and `p` were swept and do not help (`p=3` → 4.8x, `p=4` → 4.0x, i.e. worse; `C=0.05` → unchanged). The full layout landed at 3.7x against 1.6x for a uniform disc: regions are real (median community spatial spread 0.44x the map) but there is no structure below them at zoom. Treat a max/mean near 2 in the exporter's density line as "the graph was too dense to unfold", not as a rendering problem. **The one untested lever is ForceAtlas2's LinLog mode**, which graph-tool does not offer — `08_export_gephi.py` writes `data/gephi/{nodes,edges}.csv` for testing it in Gephi by hand.
 
 ### Rust parser (`src/`) — where graph identity is decided
 
@@ -146,9 +157,11 @@ All GPU→CPU transfers go through `.to_arrow().to_pandas()` to bypass Numba dri
 
 ### Config
 
-`config.yaml` is read by five scripts, each with its **own** `load_config()` and its own hardcoded defaults dict. Adding a key means adding it to that script's defaults too, or it won't survive a missing/partial config file. `01_graph_compute.py` only merges top-level sections it already knows about.
+`config.yaml` is read by most of the Python scripts, each with its **own** `load_config()` and its own hardcoded defaults dict. Adding a key means adding it to that script's defaults too, or it won't survive a missing/partial config file. `01_graph_compute.py` only merges top-level sections it already knows about.
 
 CLI flags override config: `--sample` beats `pipeline.sample_ratio`, `--width/--height` beat `export.*`.
+
+`community.resolution: 6.0` and the two `max_categories: 96` are the **shipped enwiki values, deliberately tracked** — a working-tree edit of the resolution dial was once destroyed by `git reset --hard` and the next merge silently regressed the map to res-1. Do not "clean them up" back to the defaults-looking 1.0/24.
 
 ### Deployment
 
