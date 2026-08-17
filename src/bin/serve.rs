@@ -529,8 +529,16 @@ fn err(msg: impl Into<String>) -> (StatusCode, Json<serde_json::Value>) {
     )
 }
 
-async fn index() -> Html<&'static str> {
-    Html(include_str!("../../static/index.html"))
+/// Short-lived public caching so an edge proxy (Cloudflare in front of the
+/// tunnel) serves the page instead of the home uplink. Five minutes is the
+/// deploy-visibility price, paid knowingly: on an LTE connection the page
+/// and the map are the two objects that matter, and with both edge-cached
+/// the uplink carries only per-race JSON — a few KB/s per active player.
+async fn index() -> impl IntoResponse {
+    (
+        [(header::CACHE_CONTROL, "public, max-age=300")],
+        Html(include_str!("../../static/index.html")),
+    )
 }
 
 /// Region names, so the link list can group by topic instead of showing a
