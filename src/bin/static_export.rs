@@ -275,6 +275,7 @@ fn main() -> Result<()> {
                         "goal": art_json(&game, dst),
                         "par": par,
                         "routes": routes,
+                        "route": route_json(&game, &mut pf, src, dst, ban),
                     }));
                 }
             }
@@ -400,7 +401,44 @@ fn puzzle_json(
         "par": p.optimal,
         "ban_degree": p.ban_degree,
         "routes": routes,
+        "route": route_json(game, pf, p.start, p.goal, p.ban_degree),
     })
+}
+
+/// One shortest route, baked in at export: [[id, title, x, y], ...]. The
+/// live server computes this on demand post-race; a static build has no
+/// pathfinder, and reconstructing from the truncated compass levels only
+/// reached ~1/3 of races (depth 2-3 vs pars up to 6). A few hundred bytes
+/// per race buys 100% coverage. It sits in a file the client fetches at
+/// race start — "hidden" was never on the table for a static site, and
+/// there is no posted leaderboard to protect.
+fn route_json(
+    game: &Game,
+    pf: &mut PathFinder,
+    start: u32,
+    goal: u32,
+    ban: Option<usize>,
+) -> serde_json::Value {
+    let path = match ban {
+        Some(limit) => {
+            let rev = &game.graph.reverse;
+            let b = move |v: u32| rev.degree(v) > limit;
+            pf.shortest_path(&game.graph, start, goal, &b)
+        }
+        None => pf.shortest_path(&game.graph, start, goal, &|_| false),
+    }
+    .unwrap_or_default();
+    let nodes: Vec<_> = path
+        .iter()
+        .map(|&id| {
+            let (x, y) = match game.coords(id) {
+                Some((x, y, _)) => (Some(x), Some(y)),
+                None => (None, None),
+            };
+            json!([id, game.graph.title(id), x, y])
+        })
+        .collect();
+    json!(nodes)
 }
 
 /// A puzzle endpoint's article object, matching the fields the client reads

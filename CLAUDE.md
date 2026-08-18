@@ -64,9 +64,10 @@ cargo build --release --bin pools
 # Shards are {a: entries, d: per-target desc+flags dict}; compass-lite files
 # (--compass-days, default 365 + archive) give dailies/rounds a real compass,
 # and every random-pool goal gets one too (compass/g{id}.json — which is why
-# --random-per-diff defaults to 800: all-compassed beats a lottery). The
-# client also rebuilds "a shortest route" from those levels after a race,
-# shown only when the walk lands on exactly par. Needs pools.parquet for the
+# --random-per-diff defaults to 800: all-compassed beats a lottery). Every
+# puzzle file also carries one baked shortest route ([[id,title,x,y],...],
+# ban honoured) for the post-race reveal — the compass-walk approach only
+# reached a third of races at enwiki depth. Needs pools.parquet for the
 # Random button. Dailies pre-generate a year ahead by default (~2 KB each;
 # --days 3650 = a decade, still under Pages' 20k-file cap) and advance on
 # the visitor's clock via the shared epoch.

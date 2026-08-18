@@ -438,13 +438,13 @@
             it replayed on the map, and learn how many optimal routes existed
             — one route at par 4 is a very different puzzle from two
             hundred.</li>
-        <li class="static-only">After a race you learn <b>how many optimal
-            routes</b> existed — and, when the compass map reaches far enough,
-            see <b>a shortest route</b> replayed on the map.</li>
+        <li class="static-only">After a race: see <b>a shortest route</b>,
+            watch it replayed on the map, and learn how many optimal routes
+            existed — one route at par 4 is a very different puzzle from two
+            hundred.</li>
         <li class="static-only">This is the free daily edition. The full
-            server adds topic and custom races, region-grouped links, a
-            guaranteed route reveal with from-here analysis, and the
-            leaderboard.</li>
+            server adds topic and custom races, region-grouped links,
+            from-here analysis on a give-up, and the leaderboard.</li>
       </ol>
       <label class="hcheck"><input type="checkbox" id="hnever"> Don't show this again</label>
       <div class="row" style="margin-top:14px">
@@ -642,6 +642,7 @@ const blank = () => ({
   goal:null, cur:null, trail:[], steps:[], par:null, ban:null, run:null,
   done:false, started:null, elapsed:0, number:null, difficulty:'easy', share:'',
   veil:null, pauseAt:0, url:'',
+  route:null,             // static: the baked shortest route, shown post-race
   jumped:false,           // a search jump moved the start: the run can't be scored
   compass:0, dist:null,   // charges left, and id -> clicks-to-goal for this article
   best:null,              // the optimal route, drawn on the map once the race ends
@@ -723,6 +724,7 @@ function sPuzzle(raw, difficulty, number, meta, goalCompass) {
   const charges = avail ? Math.min(Math.max(raw.par - 2, 1), 4) : 0;
   return { start: raw.start, goal: raw.goal, optimal: raw.par,
     ban_degree: raw.ban_degree ?? null, difficulty, number: number ?? null,
+    route: raw.route ?? null,   // baked shortest route, shown post-race
     compass: charges, run: sIssue(raw, number, ckey, charges) };
 }
 
@@ -841,54 +843,6 @@ async function staticApi(p, o) {
   // its only function, and playtesters mistook it for the link filter), so
   // the exporter stopped shipping the 2,417 search bucket files.
   throw new Error('not available in the static build');
-}
-
-/* Static route reveal: rebuild one shortest route from the compass levels.
-   From the start, step to any unbanned link whose exact distance is one
-   less, refetching each hop's shard. Only possible when the start's links
-   reach into the truncated distance map (roughly par <= depth+1), and only
-   shown when the walk lands on the goal in exactly par clicks — anything
-   else stays hidden rather than half-right. Costs ~par shard fetches, paid
-   once, on the results screen. */
-async function sBestRoute() {
-  const r = S_RUNS.get(+state.run);
-  if (!r || state.par == null || !state.trail.length) return null;
-  const cf = await sj(r.number != null
-      ? `compass/${r.number}.json` : `compass/g${r.goal}.json`);
-  const entry = r.number != null ? cf[r.ckey] : cf;
-  if (!entry) return null;
-  const dmap = new Map();
-  entry.l.forEach((lvl, i) => {
-    let id = 0;
-    for (const gap of lvl) { id += gap; dmap.set(id, i + 1); }
-  });
-  const meta = await sj('meta.json');
-  const art = async id => {
-    const shard = await sj(`shards/${Math.floor(id / meta.shard_size)}.json`);
-    const arr = Array.isArray(shard) ? shard : shard.a;
-    return arr.find(a => a[0] === id);
-  };
-  let cur = await art(state.trail[0].id);
-  if (!cur) return null;
-  const path = [{ id: cur[0], title: cur[1], x: cur[7], y: cur[8] }];
-  // The distance map ignores hub bans (same as live), so a banned hop can be
-  // the only descending one; skipping it may cost a sideways step. The final
-  // length-equals-par check is what keeps the display honest either way.
-  while (path.length <= state.par && path[path.length - 1].id !== r.goal) {
-    let best = null, bd = Infinity;
-    for (const [lid, , ld] of cur[10]) {
-      const d = lid === r.goal ? 0 : dmap.get(lid);
-      if (d == null || d >= bd) continue;
-      if (state.ban != null && lid !== r.goal && ld > state.ban) continue;
-      bd = d; best = lid;
-    }
-    if (best == null) return null;
-    cur = await art(best);
-    if (!cur) return null;
-    path.push({ id: cur[0], title: cur[1], x: cur[7], y: cur[8] });
-  }
-  return (path[path.length - 1].id === r.goal && path.length - 1 === state.par)
-    ? path : null;
 }
 
 async function api(p, o) {
@@ -1452,21 +1406,19 @@ async function finish(won) {
   }
 
   if (STATIC) {
-    // No pathfinder without a server, but the compass levels can often
-    // rebuild a shortest route from the start. The from-here analysis
-    // stays live-only. Failures just leave the box hidden — never show
-    // "no route exists" for routes that exist fine.
+    // No pathfinder without a server: the route was baked into the puzzle
+    // file at export time ([[id,title,x,y],...]). The from-here analysis
+    // stays live-only. An old cached puzzle without one just leaves the
+    // box hidden — never show "no route exists" for routes that exist.
     $('fromherebox').style.display = 'none';
     $('route').innerHTML = ''; $('routetxt').textContent = '';
-    try {
-      const p = await sBestRoute();
-      if (p) {
-        $('route').innerHTML = routeHtml(p, state.trail);
-        $('routetxt').textContent = `A shortest route (${p.length - 1} clicks)`;
-        state.best = p;
-        if (p.filter(a => a.x != null).length > 1) $('replay').style.display = '';
-      }
-    } catch {}
+    const p = (state.route || []).map(([id, title, x, y]) => ({ id, title, x, y }));
+    if (p.length > 1) {
+      $('route').innerHTML = routeHtml(p, state.trail);
+      $('routetxt').textContent = `A shortest route (${p.length - 1} clicks)`;
+      state.best = p;
+      if (p.filter(a => a.x != null).length > 1) $('replay').style.display = '';
+    }
     draw();
   }
   const ask = (from) => api('/api/path', { method:'POST',
@@ -1581,7 +1533,7 @@ async function adoptPuzzle(p, opts) {
   Object.assign(state, {
     archive: !!opts.archive,
     goal:p.goal, par:p.optimal, ban:p.ban_degree, run:p.run,
-    startId:p.start.id,
+    startId:p.start.id, route:p.route??null,
     number:p.number??null, difficulty:p.difficulty||opts.difficulty, compass:p.compass??0 });
   $('goal').textContent = p.goal.title;
   $('goalmeta').textContent = [p.goal.desc,
