@@ -166,8 +166,14 @@
   #custom button { width:100%; margin-top:8px; }
   #custom .picked { border-color:var(--to); }
   #cerr { margin-top:6px; min-height:14px; }
-  .tag.near { color:var(--from); font-weight:700; }
-  .tag.far  { color:var(--faint); }
+  .tag.near { color:var(--from); font-weight:800; font-size:11.5px;
+              background:color-mix(in srgb, var(--from) 18%, transparent);
+              padding:1px 6px; border-radius:7px; }
+  .tag.far  { color:var(--faint); background:color-mix(in srgb, var(--faint) 12%, transparent);
+              padding:1px 6px; border-radius:7px; }
+  .compassnote { padding:8px 10px; margin:4px 0 8px; font-size:12.5px;
+              border:1px solid var(--accent); border-radius:9px;
+              color:var(--accent); background:color-mix(in srgb, var(--accent) 10%, transparent); }
   #compass:disabled { opacity:.42; }
   .hits .hit { padding:6px 9px; cursor:pointer; border-radius:6px; }
   .hits .hit:hover { background:var(--hover); }
@@ -1111,14 +1117,22 @@ function paintLinks() {
       if (!by.has(c)) by.set(c, []);
       by.get(c).push(l);
     }
-    const groups = [...by.entries()].sort((a, b) => b[1].length - a[1].length);
+    // A 185-link list scattered over dozens of 1-2 link regions is worse
+    // than no grouping at all. Small groups pool into one bucket at the end;
+    // real regions keep their headers.
+    let groups = [...by.entries()].sort((a, b) => b[1].length - a[1].length);
+    const small = groups.filter(([, items]) => items.length < 3);
+    if (small.length > 1) {
+      groups = groups.filter(([, items]) => items.length >= 3);
+      groups.push(['__misc', small.flatMap(([, items]) => items)]);
+    }
     for (const [c, items] of groups) {
       const h = document.createElement('button');
       h.className = 'ghead';
       const open = !COLLAPSED.has(c);
       h.innerHTML =
-        `<span class="gdot" style="background:${colorOf(c)}"></span>` +
-        `<span class="gname">${esc(regionName(c))}</span>` +
+        `<span class="gdot" style="background:${c === '__misc' ? 'var(--locked)' : colorOf(c)}"></span>` +
+        `<span class="gname">${c === '__misc' ? 'Elsewhere on the map' : esc(regionName(c))}</span>` +
         `<span class="tag">${items.length}</span>` +
         `<span class="gcar">${open ? '\u25be' : '\u25b8'}</span>`;
       h.onclick = () => {
@@ -1520,6 +1534,14 @@ $('compass').onclick = async () => {
     state.dist = {};
     for (const l of r.links) state.dist[l.id] = l.dist;
     paintLinks();
+    // The distances land as small tags, which playtesting called too subtle
+    // to notice — so say what just happened, loudly and specifically.
+    const dists = Object.values(state.dist).filter(d => d != null);
+    const best = dists.length ? Math.min(...dists) : null;
+    const nBest = dists.filter(d => d === best).length;
+    $('links').insertAdjacentHTML('afterbegin',
+      `<div class="compassnote">\u{1F9ED} Compass: exact clicks-to-goal shown on every link below${
+        best != null ? ` — ${nBest} link${nBest===1?' is':'s are'} ${best} away` : ''}</div>`);
   } catch (e) {
     // A charge is spent server-side before the search runs, so a failure here
     // has still cost one. Saying so beats silently looking broken.
