@@ -60,6 +60,12 @@ struct Args {
     /// Also emit the archive back to daily #1.
     #[arg(long, default_value_t = true)]
     archive: bool,
+
+    /// Pre-rolled random races per difficulty. Each costs ~80 bytes; 5,000
+    /// is ~130 KB compressed on the wire, fetched once per session — years
+    /// of no-repeat feel for one map-sized download.
+    #[arg(long, default_value_t = 5_000)]
+    random_per_diff: usize,
 }
 
 fn main() -> Result<()> {
@@ -226,8 +232,8 @@ fn main() -> Result<()> {
         for d in [Difficulty::Easy, Difficulty::Medium, Difficulty::Hard] {
             let mut rng = Rng::new(0x57A7_1C00 ^ d as u64);
             let ban = d.rules().0;
-            let mut rows = Vec::with_capacity(1500);
-            for _ in 0..1500 {
+            let mut rows = Vec::with_capacity(a.random_per_diff);
+            for _ in 0..a.random_per_diff {
                 if let Some((src, dst, par, routes)) = game.pools_pick_full(d, &mut rng) {
                     rows.push(json!([
                         src, g.title(src), dst, g.title(dst), par, routes

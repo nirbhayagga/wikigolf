@@ -591,7 +591,9 @@ async fn index() -> impl IntoResponse {
 /// handles by falling back to "Region N".
 async fn regions(State(s): State<Shared>) -> impl IntoResponse {
     (
-        [(header::CACHE_CONTROL, "public, max-age=86400")],
+        // Ten minutes, not a day: region names change with deploys, and a
+        // day-old cache made a fixed build look broken for 24 hours.
+        [(header::CACHE_CONTROL, "public, max-age=600")],
         Json(s.game.region_names.clone()),
     )
         .into_response()
