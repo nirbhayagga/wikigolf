@@ -492,6 +492,7 @@
         <span class="lbl2">replay&nbsp;#</span>
         <input id="dnum" placeholder="today" aria-label="Replay a past daily or round by number">
       </span>
+      <span id="streakchip" class="lbl2" style="display:none"></span>
     </div>
 
     <div id="hubctl">
@@ -611,6 +612,20 @@ let state = blank();
 
 const fmtViews = v => v >= 1e6 ? (v/1e6).toFixed(1)+'M'
   : v >= 1e3 ? Math.round(v/1e3)+'k' : String(v);
+
+/* The streak was invisible except in the win verdict — a retention hook
+   nobody could find. This chip sits by the daily controls whenever a
+   streak exists. */
+function updateStreakChip() {
+  let st = {};
+  try { st = JSON.parse(localStorage.getItem('wr-streak')) || {}; } catch {}
+  const el = $('streakchip');
+  if (!st.streak) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.textContent = `\u{1F525}${st.streak}`;
+  el.title = `Daily streak: ${st.streak} (best ${st.best || st.streak}). ` +
+    `Win consecutive dailies on this device to grow it.`;
+}
 
 /* Infobox kind -> a glyph. Prefix-matched, tiny on purpose: an icon for the
    dozen common kinds beats a legend for four hundred rare ones. */
@@ -1231,6 +1246,7 @@ async function finish(won) {
       localStorage.setItem('wr-streak', JSON.stringify(s));
     }
     streak = s.streak || 0;
+    updateStreakChip();
     if (streak > 1) $('verdict').textContent += ` · 🔥${streak}`;
   }
 
@@ -1824,6 +1840,7 @@ window.addEventListener('keydown', e => {
 
 (async function init(){
   setTheme(localStorage.getItem('wr-theme') || 'midnight');
+  updateStreakChip();
   if (STATIC) {
     for (const id of ['hubctl', 'custom', 'compass']) {
       const el = $(id); if (el) el.style.display = 'none';
