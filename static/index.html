@@ -829,20 +829,9 @@ async function staticApi(p, o) {
              saturated: r.routes >= 4294967295, exact: true };
   }
 
-  if (path === '/api/search') {
-    const query = (q.get('q') || '').trim().toLowerCase();
-    if (query.length < 2) return [];
-    const cs = [...query];
-    const file = (cs[0].codePointAt(0) * 31 + cs[1].codePointAt(0)) % 4096;
-    const bucket = await sj(`search/${file}.json`).catch(() => ({}));
-    const rows = bucket[cs[0] + cs[1]] || [];
-    const limit = +(q.get('limit') || 10);
-    return rows
-      .filter(([, t]) => t.toLowerCase().includes(query))
-      .slice(0, limit)
-      .map(([id, title, deg]) => ({ id, title, in_degree: deg }));
-  }
-
+  // No /api/search: the jump bar is hidden on static (mid-race teleport was
+  // its only function, and playtesters mistook it for the link filter), so
+  // the exporter stopped shipping the 2,417 search bucket files.
   throw new Error('not available in the static build');
 }
 
@@ -1979,7 +1968,10 @@ window.addEventListener('keydown', e => {
   if (STATIC) {
     // The compass stays: compass-lite files cover dailies and rounds, and
     // updateCompass hides the button per-race when there is no data.
-    for (const id of ['hubctl', 'custom']) {
+    // The jump search bar goes too: its only function is mid-race teleport
+    // (unscored), the first playtester mistook it for the link filter, and
+    // the exporter no longer ships search buckets to back it.
+    for (const id of ['hubctl', 'custom', 'search', 'hits']) {
       const el = $(id); if (el) el.style.display = 'none';
     }
     // Boards need a server; the round stays 3 holes (9 isn't exported).
