@@ -167,7 +167,7 @@ so ids are stable across re-parses of the same dump.*
 | `nodes.parquet` | 206.7 MB | `vertex`, `x`, `y`, `community`, `pagerank`, `degree`. The contract for scripts 02–06 and the game's map. Canonical copy carries res-6 communities (2,970 distinct). |
 | `manifest.json` | 348 B | Input + config fingerprint. Refuses to mix caches from different inputs. |
 | `community_stats.json` | — | Per-community sizes and exemplars. |
-| `community_labels.json` | — | LLM region names. Optional; categories supersede it. |
+| `community_labels.json` | — | LLM region names. Optional; merged per-region with the category-vote fallback, and every source passes the same vacuous-name filter and cross-region uniqueness (`merge_region_names`) — this file once bypassed the "Living people" fix entirely. |
 | `pageviews.parquet` | 32.6 MB | `id`, `views`. Optional, external (09_pageviews.py; July 2026: 6.56B en views, 99.8% article coverage, ~10 min to regenerate from a cached dump). |
 | `endpoint_deny.txt` | — | Optional editorial curation: one title per line, resolved through redirects; denied articles never appear as generated race endpoints. |
 | `pools.parquet` | a few MB | `difficulty`, `par`, `src`, `dst`, `routes`. Optional; from the `pools` binary. Carries the graph's article/edge counts as metadata — the server refuses it against a different dump. |

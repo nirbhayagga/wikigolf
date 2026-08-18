@@ -582,16 +582,15 @@ impl Game {
         let descs = PerArticle::load(&data_dir.join("short_descriptions.parquet"), n_articles, 1)?;
         let kinds = PerArticle::load(&data_dir.join("infobox_types.parquet"), n_articles, 1)?;
 
-        // Region names, preferring what editors wrote over what a model
-        // guessed. A region is an emergent cluster with no category of its
-        // own, but its members carry categories, and the most common one
-        // among them is a fair name — free, deterministic, and grounded in
-        // the encyclopedia rather than in an API call.
-        let region_names = if !llm_names.is_empty() {
-            llm_names
-        } else {
-            derive_region_names(&layout, &categories, n_articles)
-        };
+        // Region names: LLM labels where they survive sanitation, the
+        // category-vote fallback everywhere else, one vacuous/uniqueness
+        // regime over both. Derivation always runs — it is the fallback per
+        // region, not per data directory.
+        let region_names = merge_region_names(
+            llm_names,
+            derive_region_names(&layout, &categories, n_articles),
+            &layout,
+        );
 
         let search = if alias_search {
             SearchIndex::build(&graph.titles, || graph.alias_entries(), &|v| {
@@ -1246,6 +1245,88 @@ fn read_u32_column(path: &Path, n: usize, what: &str) -> Result<Vec<u32>> {
 /// Only the head of each region is sampled. A region can hold hundreds of
 /// thousands of articles and the modal category converges long before that;
 /// counting all of them would cost a full pass for a label.
+/// A category can be common without being descriptive. "Living people"
+/// is the most common category on all of Wikipedia, so every people-heavy
+/// region elects it — the shipped map once showed four regions in a row
+/// all named "Living people". Birth/death years are the same trap.
+/// Case-insensitive because LLM labels arrive in whatever case the model
+/// chose, and "living people" is the same non-name as "Living people".
+fn vacuous_region_name(name: &str) -> bool {
+    let n = name.trim();
+    n.eq_ignore_ascii_case("living people")
+        || {
+            let lower = n.to_ascii_lowercase();
+            (lower.ends_with(" births") || lower.ends_with(" deaths"))
+                && n.chars().take_while(|c| c.is_ascii_digit()).count() >= 3
+        }
+}
+
+/// LLM labels sometimes append the region's dominant category in
+/// parentheses — "Jazz musicians (living people)". Strip a trailing
+/// parenthetical that is itself vacuous; reject the label outright if what
+/// remains is empty or vacuous.
+fn clean_llm_name(name: &str) -> Option<String> {
+    let mut n = name.trim();
+    if n.ends_with(')') {
+        if let Some(open) = n.rfind('(') {
+            if vacuous_region_name(&n[open + 1..n.len() - 1]) {
+                n = n[..open].trim_end();
+            }
+        }
+    }
+    if n.is_empty() || vacuous_region_name(n) {
+        None
+    } else {
+        Some(n.to_string())
+    }
+}
+
+/// One sanitation regime for every name source. The LLM label wins where it
+/// survives cleaning, the derived (category-vote) name is the fallback, and
+/// uniqueness is enforced across regions case-insensitively with bigger
+/// regions choosing first — the same rule `derive_region_names` applies
+/// internally. The "Living people" fix must not depend on which optional
+/// files a data directory happens to contain, which is exactly how it
+/// escaped once: `community_labels.json` bypassed the filter entirely.
+fn merge_region_names(
+    llm: std::collections::HashMap<i32, String>,
+    derived: std::collections::HashMap<i32, String>,
+    layout: &Option<Layout>,
+) -> std::collections::HashMap<i32, String> {
+    if llm.is_empty() {
+        return derived;
+    }
+    let mut sizes: std::collections::HashMap<i32, u32> = Default::default();
+    if let Some(l) = layout {
+        for &c in &l.community {
+            *sizes.entry(c).or_default() += 1;
+        }
+    }
+    let mut regions: Vec<i32> = llm.keys().chain(derived.keys()).copied().collect();
+    regions.sort_unstable();
+    regions.dedup();
+    regions.sort_by_key(|c| (std::cmp::Reverse(sizes.get(c).copied().unwrap_or(0)), *c));
+
+    let mut used: std::collections::HashSet<String> = Default::default();
+    let mut out = std::collections::HashMap::new();
+    for c in regions {
+        let cands = llm
+            .get(&c)
+            .and_then(|n| clean_llm_name(n))
+            .into_iter()
+            .chain(derived.get(&c).cloned());
+        for name in cands {
+            let key = name.to_lowercase();
+            if !used.contains(&key) {
+                used.insert(key);
+                out.insert(c, name);
+                break;
+            }
+        }
+    }
+    out
+}
+
 fn derive_region_names(
     layout: &Option<Layout>,
     categories: &PerArticle,
@@ -1276,15 +1357,7 @@ fn derive_region_names(
         }
     }
 
-    // A category can be common without being descriptive. "Living people"
-    // is the most common category on all of Wikipedia, so every people-heavy
-    // region elects it — the shipped map once showed four regions in a row
-    // all named "Living people". Birth/death years are the same trap.
-    let vacuous = |name: &str| {
-        name == "Living people"
-            || ((name.ends_with(" births") || name.ends_with(" deaths"))
-                && name.chars().take_while(|c| c.is_ascii_digit()).count() >= 3)
-    };
+    let vacuous = vacuous_region_name;
 
     // Names must also be unique across regions: bigger regions pick first,
     // and a region whose favourite is taken falls to its next candidate —
@@ -1351,6 +1424,50 @@ mod region_name_tests {
     fn flat_layout(communities: Vec<i32>) -> Option<Layout> {
         let n = communities.len();
         Some(Layout { x: vec![0.0; n], y: vec![0.0; n], community: communities })
+    }
+
+    #[test]
+    fn llm_names_pass_through_the_same_sanitation() {
+        // Region 0 (biggest) has a vacuous LLM label and falls to its
+        // derived name; region 1's label survives with its vacuous
+        // parenthetical stripped; region 2 duplicates region 1's label
+        // case-insensitively and falls back too.
+        let layout = flat_layout(vec![0, 0, 0, 1, 1, 2]);
+        let llm: std::collections::HashMap<i32, String> = [
+            (0, "living people".to_string()),
+            (1, "Jazz musicians (living people)".to_string()),
+            (2, "jazz musicians".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let derived: std::collections::HashMap<i32, String> = [
+            (0, "Physicists".to_string()),
+            (1, "Jazz".to_string()),
+            (2, "Trumpeters".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let names = merge_region_names(llm, derived, &layout);
+        assert_eq!(names[&0], "Physicists");
+        assert_eq!(names[&1], "Jazz musicians");
+        assert_eq!(names[&2], "Trumpeters");
+    }
+
+    #[test]
+    fn llm_name_cleaning() {
+        assert_eq!(clean_llm_name("Living people"), None);
+        assert_eq!(clean_llm_name("  living people "), None);
+        assert_eq!(clean_llm_name("1953 births"), None);
+        assert_eq!(
+            clean_llm_name("Jazz musicians (living people)"),
+            Some("Jazz musicians".to_string())
+        );
+        // A non-vacuous parenthetical is part of the name, not a suffix.
+        assert_eq!(
+            clean_llm_name("Mercury (planet)"),
+            Some("Mercury (planet)".to_string())
+        );
+        assert_eq!(clean_llm_name("(living people)"), None);
     }
 
     #[test]
