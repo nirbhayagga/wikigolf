@@ -57,7 +57,7 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
 |---|---:|---|
 | `bin/serve.rs` | ~1500 | The HTTP service. Holds the whole graph in memory; every response derives from the parser's Parquet, so the optimal path reported is optimal *in the world the player is playing in*. |
 | `bin/pathfind.rs` | 86 | CLI shortest path between two articles. |
-| `bin/static_export.rs` | ~260 | Emits the whole game as a static file tree (shards, search buckets, pre-generated dailies/rounds/randoms, the page itself) for free file hosting. Simple English: 2 s. The page's `data-static` adapter consumes it. |
+| `bin/static_export.rs` | ~280 | Emits the whole game as a static file tree (shards, search buckets, the page, and dailies/rounds pre-generated a year ahead by default — ~2 KB/day, so `--days 3650` is a decade). The page's `data-static` adapter consumes it and derives "today" from the client clock. Simple English: 2 s; enwiki: ~10 min, 8.3 GB, ~11k files. |
 | `bin/pools.rs` | ~110 | Generates `pools.parquet` on the PC (~2 h at enwiki scale, once per dump; 32 min measured on Simple English). The server picks it up at startup; without it, puzzle generation falls back to rejection sampling unchanged. |
 
 ### Load-bearing details

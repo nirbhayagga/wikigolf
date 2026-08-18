@@ -61,10 +61,11 @@ cargo build --release --bin pools
 ./target/release/pools --data data
 
 # Static build: the whole game as files for free hosting (Cloudflare Pages).
-# Needs pools.parquet for the Random button; exports dailies N days ahead,
-# after which the site goes stale without a re-export.
+# Needs pools.parquet for the Random button. Dailies pre-generate a year
+# ahead by default (~2 KB each; --days 3650 = a decade, still under Pages'
+# 20k-file cap) and advance on the visitor's clock via the shared epoch.
 cargo build --release --bin static_export
-./target/release/static_export --data data --out static_site --days 45
+./target/release/static_export --data data --out static_site
 
 # Head-to-head duels exist but are DARK: routes mount only with
 # --enable-duels, and no UI references them. Kilobytes per room when on.

@@ -52,9 +52,11 @@ struct Args {
     #[arg(short, long, default_value = "static_site")]
     out: PathBuf,
 
-    /// Future dailies/rounds to pre-generate. The site goes stale after
-    /// this many days without a re-export — size it to your republish habit.
-    #[arg(long, default_value_t = 45)]
+    /// Future dailies/rounds to pre-generate. Each daily file costs ~2 KB,
+    /// so a whole year is ~700 KB — the default makes staleness an annual
+    /// concern, not a monthly one. Past the horizon the page tells visitors
+    /// plainly that the build needs a re-export.
+    #[arg(long, default_value_t = 365)]
     days: u64,
 
     /// Also emit the archive back to daily #1.
