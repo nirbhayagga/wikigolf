@@ -1087,6 +1087,14 @@ function paintLinks() {
   // never what you are looking for.
   links.sort((a,b) => {
     if (!!a.banned !== !!b.banned) return a.banned ? 1 : -1;
+    // A spent compass charge bought exact distances; closest-first is the
+    // full delivery of that purchase. (The OLD distance sort was removed
+    // for being map-distance guesswork — this one is graph truth.)
+    if (state.dist) {
+      const da = state.dist[a.id] ?? 99, db = state.dist[b.id] ?? 99;
+      if (da !== db) return da - db;
+      return b.in_degree - a.in_degree;
+    }
     if (mode === 'az')  return a.title.localeCompare(b.title);
     if (mode === 'za')  return b.title.localeCompare(a.title);
     if (mode === 'asc') return a.in_degree-b.in_degree;
@@ -1126,7 +1134,7 @@ function paintLinks() {
   // sentences that say what they are; stripping the prose removes exactly that
   // signal. The regions are the next best thing we already have, and they are
   // the same ones the map is coloured by — so the list teaches the map.
-  if (state.group && !q) {
+  if (state.group && !q && !state.dist) {
     const by = new Map();
     for (const l of links) {
       const c = l.community ?? null;
@@ -1558,7 +1566,7 @@ $('compass').onclick = async () => {
     const best = dists.length ? Math.min(...dists) : null;
     const nBest = dists.filter(d => d === best).length;
     $('links').insertAdjacentHTML('afterbegin',
-      `<div class="compassnote">\u{1F9ED} Compass: exact clicks-to-goal shown on every link below${
+      `<div class="compassnote">\u{1F9ED} Compass: exact clicks-to-goal — list re-sorted closest first${
         best != null ? ` — ${nBest} link${nBest===1?' is':'s are'} ${best} away` : ''}</div>`);
   } catch (e) {
     // A charge is spent server-side before the search runs, so a failure here
