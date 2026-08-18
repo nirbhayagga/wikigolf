@@ -57,6 +57,7 @@
     --text:#b9f7c8; --dim:#5fae7c; --faint:#4d8664;
     --accent:#39ff88; --accent2:#8affc1;
     --from:#39ff88; --to:#ff5f6d; --trail:#ffd166; --locked:#2a5a3e;
+    --route:#4dd2ff;  /* best-route line: cyan, or it melts into the greens under protanopia */
     --hover:#0b1f16;
     --stage-a:#06110c; --stage-b:#03060a;
     --canvas-bg:#03060a; --canvas-ink:185,247,200; --canvas-halo:3,6,10;
@@ -82,6 +83,7 @@
     --text:#ffffff; --dim:#d0d0d0; --faint:#a8a8a8;
     --accent:#ffd400; --accent2:#00d5ff;
     --from:#00e676; --to:#ff4d6d; --trail:#ffd400; --locked:#6a6a6a;
+    --route:#00d5ff;  /* accent doubles as trail here, so the best-route line needs its own color */
     --hover:#242424;
     --stage-a:#0a0a0a; --stage-b:#000000;
     --canvas-bg:#000000; --canvas-ink:255,255,255; --canvas-halo:0,0,0;
@@ -879,7 +881,8 @@ function readTheme() {
   TH = {
     bg: v('--canvas-bg'), ink: v('--canvas-ink'), halo: v('--canvas-halo'),
     s: v('--dot-s'), l: v('--dot-l'), a: parseFloat(v('--dot-a')) || .3,
-    from: v('--from'), to: v('--to'), trail: v('--trail'), best: v('--accent'),
+    from: v('--from'), to: v('--to'), trail: v('--trail'),
+    best: v('--route') || v('--accent'),
     cur: v('--text'), locked: v('--locked'),
   };
 }
@@ -1347,8 +1350,12 @@ async function finish(won) {
     if (streak > 1) $('verdict').textContent += ` · 🔥${streak}`;
   }
 
-  // Green while inside par, red for every click past it.
-  const sq = state.steps.map(s => s?'🟩':'🟥');
+  // Green while inside par, red for every click past it. On the contrast
+  // theme the squares go blue/orange instead (Wordle's own high-contrast
+  // answer): the squares are the one place colour is the only channel, and
+  // emoji can't follow CSS variables.
+  const hc = localStorage.getItem('wr-theme') === 'contrast';
+  const sq = state.steps.map(s => s ? (hc?'🟦':'🟩') : (hc?'🟧':'🟥'));
   $('squares').textContent = scored ? sq.join('') : '';
   state.share = (state.number?`WikiGolf #${state.number}`:'WikiGolf')+
     ` (${state.difficulty})`+(streak>1?` · 🔥${streak}-day streak`:'')+`\n`+
