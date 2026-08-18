@@ -62,10 +62,14 @@ cargo build --release --bin pools
 
 # Static build: the whole game as files for free hosting (Cloudflare Pages).
 # Shards are {a: entries, d: per-target desc+flags dict}; compass-lite files
-# (--compass-days, default 365 + archive) give dailies/rounds a real compass.
-# Needs pools.parquet for the Random button. Dailies pre-generate a year
-# ahead by default (~2 KB each; --days 3650 = a decade, still under Pages'
-# 20k-file cap) and advance on the visitor's clock via the shared epoch.
+# (--compass-days, default 365 + archive) give dailies/rounds a real compass,
+# and every random-pool goal gets one too (compass/g{id}.json — which is why
+# --random-per-diff defaults to 800: all-compassed beats a lottery). The
+# client also rebuilds "a shortest route" from those levels after a race,
+# shown only when the walk lands on exactly par. Needs pools.parquet for the
+# Random button. Dailies pre-generate a year ahead by default (~2 KB each;
+# --days 3650 = a decade, still under Pages' 20k-file cap) and advance on
+# the visitor's clock via the shared epoch.
 cargo build --release --bin static_export
 ./target/release/static_export --data data --out static_site
 
@@ -75,6 +79,7 @@ cargo build --release --bin static_export
 docker compose -f docker-compose.game.yml up -d         # game behind Traefik (.env: RACE_HOST etc.)
 docker compose -f docker-compose.game.direct.yml up -d  # game on a bare host port
 docker compose -f docker-compose.game.tunnel.yml up -d  # game behind a Cloudflare Tunnel (.env: CF_TUNNEL_TOKEN; hostname lives in the CF dashboard)
+docker compose -f docker-compose.game.yml -f docker-compose.backup.yml up -d  # + daily state-volume backups (leaderboard + cookie secret)
 docker compose -f docker-compose.yml up -d              # map viewer behind Traefik (VIEW_HOST)
 docker compose -f docker-compose.game.yml -f docker-compose.yml up -d  # game + viewer together
 ```

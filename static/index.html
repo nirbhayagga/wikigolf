@@ -413,10 +413,9 @@
         <li class="live-only">The <b>🧭 Compass</b> spends a limited charge to
             show the true distance to the goal from every link you can see.
             Charges scale with par — spend them where it hurts.</li>
-        <li class="static-only">On <b>Daily</b> and <b>Round</b> races the
-            <b>🧭 Compass</b> spends a limited charge to show the true
-            distance to the goal from the links you can see. Charges scale
-            with par — spend them where it hurts.</li>
+        <li class="static-only">The <b>🧭 Compass</b> spends a limited charge
+            to show the true distance to the goal from the links you can see.
+            Charges scale with par — spend them where it hurts.</li>
         <li><b>Hub exclusion</b> locks the biggest articles so you cannot route
             through "United States" every time; a 🔒 link is visible but
             untakeable. Par is computed under the same lock.</li>
@@ -432,7 +431,7 @@
             region of the map; <b>Pick your own race</b> takes any two
             articles. Either way the address bar is always a share link to the
             exact race.</li>
-        <li class="static-only"><b>Random race</b> draws from thousands of
+        <li class="static-only"><b>Random race</b> draws from hundreds of
             pre-built races at each difficulty. Daily and Round links are
             always shareable.</li>
         <li class="live-only">After a race: see <b>a shortest route</b>, watch
@@ -440,11 +439,12 @@
             — one route at par 4 is a very different puzzle from two
             hundred.</li>
         <li class="static-only">After a race you learn <b>how many optimal
-            routes</b> existed — one route at par 4 is a very different puzzle
-            from two hundred.</li>
+            routes</b> existed — and, when the compass map reaches far enough,
+            see <b>a shortest route</b> replayed on the map.</li>
         <li class="static-only">This is the free daily edition. The full
-            server adds topic and custom races, region-grouped links,
-            optimal-route reveals and replays, and the leaderboard.</li>
+            server adds topic and custom races, region-grouped links, a
+            guaranteed route reveal with from-here analysis, and the
+            leaderboard.</li>
       </ol>
       <label class="hcheck"><input type="checkbox" id="hnever"> Don't show this again</label>
       <div class="row" style="margin-top:14px">
@@ -710,14 +710,16 @@ function sIssue(p, number, ckey, charges) {
   return run;
 }
 
-function sPuzzle(raw, difficulty, number, meta) {
+function sPuzzle(raw, difficulty, number, meta, goalCompass) {
   // Compass-lite: dailies and rounds inside the exported window carry a
-  // per-goal nearest-articles file, so the compass works on them. Charges
-  // mirror the live formula: clamp(par - 2, 1, 4).
+  // per-day compass file, and pool races a per-goal one (goalCompass, from
+  // the pool file's own flag). Charges mirror the live formula:
+  // clamp(par - 2, 1, 4).
   const ckey = difficulty.startsWith('round-h')
     ? 'h' + difficulty.slice('round-h'.length) : difficulty;
-  const avail = meta && (meta.compass_days ?? 0) > 0 && number != null
-    && number >= 1 && number <= meta.today_number + meta.compass_days;
+  const avail = meta && (meta.compass_days ?? 0) > 0 && (goalCompass
+    || (number != null
+        && number >= 1 && number <= meta.today_number + meta.compass_days));
   const charges = avail ? Math.min(Math.max(raw.par - 2, 1), 4) : 0;
   return { start: raw.start, goal: raw.goal, optimal: raw.par,
     ban_degree: raw.ban_degree ?? null, difficulty, number: number ?? null,
@@ -764,9 +766,12 @@ async function staticApi(p, o) {
     const r = S_RUNS.get(+body.run);
     if (!r) throw new Error('unknown or expired run');
     if (!(r.charges > 0)) throw new Error('no compass charges left');
-    const cf = await sj(`compass/${r.number}.json`)
+    // Dailies/rounds share a per-day file keyed by difficulty; random races
+    // (number == null) get a per-goal file instead.
+    const cf = await sj(r.number != null
+        ? `compass/${r.number}.json` : `compass/g${r.goal}.json`)
       .catch(() => { throw new Error('no compass data for this race'); });
-    const entry = cf[r.ckey];
+    const entry = r.number != null ? cf[r.ckey] : cf;
     if (!entry) throw new Error('no compass data for this race');
     r.charges--;
     // Levels are delta-encoded sorted ids; level i+1 = that many clicks out.
@@ -819,7 +824,8 @@ async function staticApi(p, o) {
       ? { start: { id: r[0], title: r[1] }, goal: { id: r[2], title: r[3] },
           par: r[4], routes: r[5] }
       : r;
-    return sPuzzle({ ...raw, ban_degree: rp.ban_degree }, dif, null, meta);
+    return sPuzzle({ ...raw, ban_degree: rp.ban_degree }, dif, null, meta,
+                   !!rp.compass);
   }
 
   if (path === '/api/routes') {
@@ -835,6 +841,54 @@ async function staticApi(p, o) {
   // its only function, and playtesters mistook it for the link filter), so
   // the exporter stopped shipping the 2,417 search bucket files.
   throw new Error('not available in the static build');
+}
+
+/* Static route reveal: rebuild one shortest route from the compass levels.
+   From the start, step to any unbanned link whose exact distance is one
+   less, refetching each hop's shard. Only possible when the start's links
+   reach into the truncated distance map (roughly par <= depth+1), and only
+   shown when the walk lands on the goal in exactly par clicks — anything
+   else stays hidden rather than half-right. Costs ~par shard fetches, paid
+   once, on the results screen. */
+async function sBestRoute() {
+  const r = S_RUNS.get(+state.run);
+  if (!r || state.par == null || !state.trail.length) return null;
+  const cf = await sj(r.number != null
+      ? `compass/${r.number}.json` : `compass/g${r.goal}.json`);
+  const entry = r.number != null ? cf[r.ckey] : cf;
+  if (!entry) return null;
+  const dmap = new Map();
+  entry.l.forEach((lvl, i) => {
+    let id = 0;
+    for (const gap of lvl) { id += gap; dmap.set(id, i + 1); }
+  });
+  const meta = await sj('meta.json');
+  const art = async id => {
+    const shard = await sj(`shards/${Math.floor(id / meta.shard_size)}.json`);
+    const arr = Array.isArray(shard) ? shard : shard.a;
+    return arr.find(a => a[0] === id);
+  };
+  let cur = await art(state.trail[0].id);
+  if (!cur) return null;
+  const path = [{ id: cur[0], title: cur[1], x: cur[7], y: cur[8] }];
+  // The distance map ignores hub bans (same as live), so a banned hop can be
+  // the only descending one; skipping it may cost a sideways step. The final
+  // length-equals-par check is what keeps the display honest either way.
+  while (path.length <= state.par && path[path.length - 1].id !== r.goal) {
+    let best = null, bd = Infinity;
+    for (const [lid, , ld] of cur[10]) {
+      const d = lid === r.goal ? 0 : dmap.get(lid);
+      if (d == null || d >= bd) continue;
+      if (state.ban != null && lid !== r.goal && ld > state.ban) continue;
+      bd = d; best = lid;
+    }
+    if (best == null) return null;
+    cur = await art(best);
+    if (!cur) return null;
+    path.push({ id: cur[0], title: cur[1], x: cur[7], y: cur[8] });
+  }
+  return (path[path.length - 1].id === r.goal && path.length - 1 === state.par)
+    ? path : null;
 }
 
 async function api(p, o) {
@@ -1398,10 +1452,22 @@ async function finish(won) {
   }
 
   if (STATIC) {
-    // No pathfinding without a server: hide the route boxes rather than
-    // show "no route exists" for routes that exist fine.
-    $('route').innerHTML = ''; $('routetxt').textContent = '';
+    // No pathfinder without a server, but the compass levels can often
+    // rebuild a shortest route from the start. The from-here analysis
+    // stays live-only. Failures just leave the box hidden — never show
+    // "no route exists" for routes that exist fine.
     $('fromherebox').style.display = 'none';
+    $('route').innerHTML = ''; $('routetxt').textContent = '';
+    try {
+      const p = await sBestRoute();
+      if (p) {
+        $('route').innerHTML = routeHtml(p, state.trail);
+        $('routetxt').textContent = `A shortest route (${p.length - 1} clicks)`;
+        state.best = p;
+        if (p.filter(a => a.x != null).length > 1) $('replay').style.display = '';
+      }
+    } catch {}
+    draw();
   }
   const ask = (from) => api('/api/path', { method:'POST',
     headers:{'content-type':'application/json'},

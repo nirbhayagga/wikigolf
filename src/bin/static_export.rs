@@ -64,10 +64,11 @@ struct Args {
     #[arg(long, default_value_t = true)]
     archive: bool,
 
-    /// Pre-rolled random races per difficulty. Each costs ~350 bytes (full
-    /// start/goal article objects); 5,000 is ~500 KB compressed on the wire,
-    /// fetched once per session — years of no-repeat feel for one download.
-    #[arg(long, default_value_t = 5_000)]
+    /// Pre-rolled random races per difficulty. Every race's goal also gets a
+    /// compass file (~1.3 MB raw each at enwiki, deduped across pools), which
+    /// is what actually prices this dial: 800 races/difficulty is ~2-3 GB of
+    /// compass tree and still months of no-repeat feel for a heavy player.
+    #[arg(long, default_value_t = 800)]
     random_per_diff: usize,
 
     /// Days ahead (past dailies always included) that get compass-lite
@@ -253,14 +254,22 @@ fn main() -> Result<()> {
     // reproducible from the same pools. Start/goal are full article objects
     // (not id/title tuples) — the goal card and the map's red dot need
     // desc, in-degree, views and x/y, exactly like a daily's.
+    //
+    // Every pool race also gets a per-goal compass file (compass/g{id}.json,
+    // deduped across pools), which is why the default pool is 800 rather
+    // than 5,000: all-compassed beats a lottery where 10% of Random presses
+    // have a working compass and the rest silently don't.
     if game.has_pools() {
         fs::create_dir_all(a.out.join("random"))?;
+        let mut pool_goals: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+        let with_compass = a.compass_days > 0;
         for d in [Difficulty::Easy, Difficulty::Medium, Difficulty::Hard] {
             let mut rng = Rng::new(0x57A7_1C00 ^ d as u64);
             let ban = d.rules().0;
             let mut rows = Vec::with_capacity(a.random_per_diff);
             for _ in 0..a.random_per_diff {
                 if let Some((src, dst, par, routes)) = game.pools_pick_full(d, &mut rng) {
+                    pool_goals.insert(dst);
                     rows.push(json!({
                         "start": art_json(&game, src),
                         "goal": art_json(&game, dst),
@@ -271,10 +280,31 @@ fn main() -> Result<()> {
             }
             write_json(
                 &a.out.join(format!("random/{}.json", format!("{d:?}").to_lowercase())),
-                &json!({"ban_degree": ban, "races": rows}),
+                &json!({"ban_degree": ban, "compass": with_compass, "races": rows}),
             )?;
         }
-        eprintln!("  random race files written");
+        if with_compass {
+            fs::create_dir_all(a.out.join("compass"))?;
+            let mut bytes = 0u64;
+            let n_goals = pool_goals.len();
+            for goal in pool_goals {
+                let levels =
+                    wiki_parser::graph::near_goal_levels(g, goal, COMPASS_DEPTH, COMPASS_CAP);
+                let d = levels.len();
+                let l: Vec<_> =
+                    levels.into_iter().map(|lvl| json!(delta_encode(lvl))).collect();
+                bytes += write_json(
+                    &a.out.join(format!("compass/g{goal}.json")),
+                    &json!({"d": d, "l": l}),
+                )?;
+            }
+            eprintln!(
+                "  random race files written; {n_goals} pool-goal compass files, {:.2} GB raw",
+                bytes as f64 / 1e9
+            );
+        } else {
+            eprintln!("  random race files written (no compass: --compass-days 0)");
+        }
     }
 
     // ---- dailies + rounds, archive and future -----------------------------

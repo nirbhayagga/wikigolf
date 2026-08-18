@@ -1,0 +1,29 @@
+# State backup sidecar. Layer it over either game compose file:
+#
+#   docker compose -f docker-compose.game.yml -f docker-compose.backup.yml up -d
+#   docker compose -f docker-compose.game.tunnel.yml -f docker-compose.backup.yml up -d
+#
+# Why this exists: the `state` volume holds leaderboard.jsonl and
+# .wiki-race-secret (the HMAC key behind every identity cookie). Losing that
+# volume logs every player out and erases the leaderboard — and nothing else
+# backs it up. This tars the volume daily into a host directory and keeps the
+# last 14 archives. Restore = stop the game, untar into the volume, start.
+#
+# Environment:
+#   BACKUP_DIR  host directory for the archives (default: ./backups)
+
+services:
+  backup:
+    image: alpine:3
+    restart: unless-stopped
+    volumes:
+      - state:/state:ro
+      - ${BACKUP_DIR:-./backups}:/backups
+    # $$ is compose-escaping for $. Keep 14 dailies; the files are tiny
+    # (kilobytes) — the cap is about clutter, not space.
+    command: >
+      sh -c "while true; do
+        tar czf /backups/state-$$(date +%Y%m%d-%H%M%S).tgz -C / state
+        && ls -1t /backups/state-*.tgz | tail -n +15 | xargs -r rm;
+        sleep 86400;
+      done"
