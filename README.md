@@ -351,9 +351,10 @@ completely different cadence than the code.
 ## The static build — the whole game as files
 
 `static_export` emits WikiGolf as a tree of plain files: article shards,
-hash-bucketed search, the map, and every daily and round pre-generated N days
+the map, compass files, and every daily and round pre-generated N days
 ahead with pars and route counts baked in. The page detects the tree and
-swaps its fetch layer — no server process anywhere.
+swaps its fetch layer — no server process anywhere. (Search is live-only:
+the static build hides the jump bar and ships no search index.)
 
 ```bash
 cargo run --release --bin static_export -- --data data --out static_site
