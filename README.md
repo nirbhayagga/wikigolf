@@ -371,3 +371,9 @@ and the method is not documented publicly, so nothing here is derived from it.
 
 This is an independent implementation: Rust for parsing and the game, graph-tool
 and igraph for layout and communities, Datashader for rendering.
+
+## License
+
+[AGPL-3.0-or-later](LICENSE). Run it, fork it, learn from it; if you host a
+modified version as a service, its users get the source too. The
+Wikipedia-derived data is CC BY-SA and is not part of this repository.
