@@ -540,6 +540,7 @@
         <div class="lbl">Get to</div>
         <div class="val to" id="goal">&mdash;</div>
         <div class="sub" id="goalmeta"></div>
+        <button class="ghost" id="chal" style="display:none; margin-top:6px; padding:3px 10px; font-size:12px">&#9876; Challenge a friend</button>
       </div>
     </div>
   </div>
@@ -1418,6 +1419,7 @@ async function adoptPuzzle(p, opts) {
     ? `Round #${ROUND.number} · hole ${ROUND.idx+1}/${ROUND.holes.length}`
     : (p.number ? `#${p.number}` : '');
   setRaceUrl(p);
+  $('chal').style.display = '';
   await go(p.start.id);
   // Armed, not started. setVeil('ready') holds the clock at 0:00 until the
   // player says go.
@@ -1714,6 +1716,16 @@ async function showDist() {
 }
 
 $('share').onclick = () => copyText(state.share, $('share'), 'Copy result');
+
+// The pre-finish share: recruit an opponent, not an audience. The result
+// share needs a result; the challenge only needs a race.
+$('chal').onclick = () => {
+  if (!state.goal) return;
+  const from = state.trail[0] ? state.trail[0].title : '';
+  copyText(
+    `WikiGolf challenge ⛳ ${from} → ${state.goal.title} — par ${state.par}. Beat it:\n${state.url || location.href}`,
+    $('chal'), '⚔ Challenge a friend');
+};
 
 // Replay the optimal route on the map: frame it, then let draw() animate.
 $('replay').onclick = () => {
