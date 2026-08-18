@@ -1,0 +1,85 @@
+# wiki-race behind a Cloudflare Tunnel. No open ports, no Traefik, no
+# Let's Encrypt — TLS terminates at Cloudflare's edge and cloudflared makes
+# an OUTBOUND connection, so the host needs no reachable port at all.
+#
+# Use this INSTEAD of docker-compose.game.yml, not alongside it — same rule
+# as the direct variant: these are complete files, because Compose's list
+# merging cannot remove a network or a command flag.
+#
+#   CF_TUNNEL_TOKEN=... docker compose -f docker-compose.game.tunnel.yml up -d --build
+#
+# One-time setup (the hostname lives in Cloudflare's dashboard, not here):
+#   1. Cloudflare dashboard -> Zero Trust -> Networks -> Tunnels ->
+#      Create a tunnel (Cloudflared connector). Copy the token into .env
+#      as CF_TUNNEL_TOKEN.
+#   2. On the tunnel's "Public hostnames" tab: hostname play.example.com,
+#      service HTTP, URL game:8080. Saving this creates the DNS record.
+#
+# Environment (a .env file next to this one works):
+#   CF_TUNNEL_TOKEN  required — the tunnel's connector token
+#   DATA_DIR         where the parquet lives   (default: ./data)
+#   IMAGE            prebuilt image to run instead of building here
+
+services:
+  game:
+    image: ${IMAGE:-wiki-graph-game:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.game
+    restart: unless-stopped
+
+    # BOTH proxy flags stay on, unlike the direct variant, and safely so:
+    #
+    # --trust-proxy: cloudflared overwrites X-Forwarded-For with the real
+    # client IP, and this container has NO published port — the only way in
+    # is through the tunnel, so nobody can forge the header. Without the
+    # flag every request would appear to come from cloudflared's container
+    # IP and the per-IP rate limiter would throttle all players as one.
+    #
+    # --secure-cookies: visitors reach the game over https at Cloudflare's
+    # edge. Secure is a browser-side attribute, so it works even though the
+    # cloudflared->game hop inside the compose network is plain http.
+    command:
+      - sh
+      - -c
+      - exec serve --data /data --state /state --host 0.0.0.0 --port 8080 --trust-proxy --secure-cookies
+
+    volumes:
+      # THE DATA IS NOT IN GIT. A fresh clone has no data/ and this mount
+      # would silently create an empty directory; the container then exits
+      # with "missing parser output in /data" and restarts forever. Copy the
+      # parquet to the host first — titles and edges are required, the rest
+      # degrade gracefully.
+      - ${DATA_DIR:-./data}:/data:ro
+      # Writable state, kept out of /data so the parquet stays read-only.
+      # Holds leaderboard.jsonl and the HMAC key behind the identity cookie;
+      # losing this volume logs every player out and erases the leaderboard.
+      - state:/state
+
+    # No ports:, no networks: — the default bridge is enough, cloudflared
+    # reaches game by service name. Never add "8080:8080" here while
+    # --trust-proxy is set: a directly reachable port would let clients
+    # forge X-Forwarded-For and defeat rate limiting entirely.
+
+    # MEASURED at HEAD on the full enwiki set: 7.1 GB settled. Keep ~2-3 GB
+    # of headroom — a limit below the peak kills the container mid-load with
+    # nothing in its logs, and a host with less RAM than the limit hands the
+    # process to the kernel OOM killer instead, which presents as an
+    # unexplained restart loop. `--no-alias-search` shaves ~450 MB.
+    deploy:
+      resources:
+        limits:
+          memory: 10g
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN}
+    depends_on:
+      - game
+    # The game takes ~2 min to build its CSR before accepting connections;
+    # cloudflared just retries the origin until then, so no healthcheck
+    # choreography is needed — visitors get 502s only during that window.
+
+volumes:
+  state:

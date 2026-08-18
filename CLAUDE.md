@@ -74,6 +74,7 @@ cargo build --release --bin static_export
 
 docker compose -f docker-compose.game.yml up -d         # game behind Traefik (.env: RACE_HOST etc.)
 docker compose -f docker-compose.game.direct.yml up -d  # game on a bare host port
+docker compose -f docker-compose.game.tunnel.yml up -d  # game behind a Cloudflare Tunnel (.env: CF_TUNNEL_TOKEN; hostname lives in the CF dashboard)
 docker compose -f docker-compose.yml up -d              # map viewer behind Traefik (VIEW_HOST)
 docker compose -f docker-compose.game.yml -f docker-compose.yml up -d  # game + viewer together
 ```
