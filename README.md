@@ -351,13 +351,15 @@ ahead with pars and route counts baked in. The page detects the tree and
 swaps its fetch layer — no server process anywhere.
 
 ```bash
-cargo run --release --bin static_export -- --data data --out static_site --days 45
+cargo run --release --bin static_export -- --data data --out static_site
 ```
 
 Host it free on Cloudflare Pages (`wrangler pages deploy static_site`), put a
 domain on it, done: ~$10/year total. What the files cannot answer is hidden
 rather than broken: custom-pair races, the compass and leaderboards need the
-live server. Re-export before `--days` runs out or the daily goes stale.
+live server. Dailies are pre-generated a year ahead by default (each costs
+~2 KB; `--days 3650` buys a decade) and advance on the visitor's clock; past
+the horizon the page says the build needs a re-export.
 
 ## Acknowledgments
 
