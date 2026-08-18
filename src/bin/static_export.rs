@@ -21,7 +21,6 @@
 //!   compass/{n}.json          compass-lite: per goal, complete BFS levels
 //!                             of the ~250k nearest articles, delta-encoded
 
-use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -44,7 +43,6 @@ const OG: &[u8] = include_bytes!("../../static/og.jpg");
 /// Articles per shard. ~880 keeps a shard around 250 KB once the CDN
 /// compresses it — one link-list click, one fetch.
 const SHARD_SIZE: usize = 896;
-const SEARCH_TOP: usize = 50;
 
 #[derive(Parser, Debug)]
 #[command(name = "static_export", about = "Emit the WikiGolf static site tree")]
@@ -123,7 +121,6 @@ fn main() -> Result<()> {
     let mut pf = PathFinder::new(n);
 
     fs::create_dir_all(a.out.join("shards"))?;
-    fs::create_dir_all(a.out.join("search"))?;
     fs::create_dir_all(a.out.join("daily"))?;
 
     // ---- the page, the card, meta / regions / landmarks / map -------------
@@ -245,48 +242,10 @@ fn main() -> Result<()> {
     }
     eprintln!("  {n_shards} shards, {:.2} GB raw", shard_bytes as f64 / 1e9);
 
-    // ---- search prefix buckets --------------------------------------------
-    // Two-char prefixes over Unicode titles produce an unbounded key space,
-    // and Cloudflare Pages caps a deploy at 20k files — so prefixes hash
-    // into a fixed 4096 buckets, each holding a map of prefix -> top titles.
-    // The client computes the same (c1*31+c2)%4096 and looks its prefix up
-    // inside the fetched file.
-    let mut buckets: HashMap<u64, HashMap<String, Vec<(usize, u32)>>> = HashMap::new();
-    for id in 0..n as u32 {
-        let t = g.title(id);
-        let mut chars = t.chars().flat_map(|c| c.to_lowercase());
-        let (Some(c1), c2) = (chars.next(), chars.next()) else { continue };
-        let c2v = c2.map_or(0, |c| c as u64);
-        let file = (c1 as u64 * 31 + c2v) % 4096;
-        let prefix = match c2 {
-            Some(c2) => format!("{c1}{c2}"),
-            None => c1.to_string(),
-        };
-        let v = buckets.entry(file).or_default().entry(prefix).or_default();
-        v.push((g.reverse.degree(id), id));
-        // Keep lists bounded as we go; exact ordering is finalized below.
-        if v.len() > SEARCH_TOP * 4 {
-            v.sort_unstable_by(|x, y| y.0.cmp(&x.0));
-            v.truncate(SEARCH_TOP);
-        }
-    }
-    let n_files = buckets.len();
-    let mut n_prefixes = 0usize;
-    for (file, prefixes) in buckets {
-        let mut obj = serde_json::Map::new();
-        n_prefixes += prefixes.len();
-        for (prefix, mut v) in prefixes {
-            v.sort_unstable_by(|x, y| y.0.cmp(&x.0));
-            v.truncate(SEARCH_TOP);
-            let rows: Vec<_> = v
-                .into_iter()
-                .map(|(deg, id)| json!([id, g.title(id), deg]))
-                .collect();
-            obj.insert(prefix, json!(rows));
-        }
-        write_json(&a.out.join(format!("search/{file}.json")), &json!(obj))?;
-    }
-    eprintln!("  {n_prefixes} search prefixes in {n_files} bucket files");
+    // No search buckets: the jump search bar is hidden on static (its only
+    // function was mid-race teleporting, which voids the score and confused
+    // playtesters), so the 4096-bucket prefix index it queried — ~2,400
+    // files against Pages' 20k-file deploy cap — is no longer written.
 
     // ---- random race pools ------------------------------------------------
     // Pre-drawn races per difficulty, par and routes attached, so the static
