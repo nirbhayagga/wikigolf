@@ -12,11 +12,14 @@
 //!   meta.json                 counts, shard scheme, day numbering
 //!   regions.json              community id -> name
 //!   landmarks.json / map.json the background map
-//!   shards/{i}.json           articles [i*S, (i+1)*S): metadata + links
-//!                             with titles denormalized, one fetch per click
+//!   shards/{i}.json           {a: articles [i*S,(i+1)*S), d: target dict}
+//!                             — links denormalized, one fetch per click;
+//!                             d carries desc+flags per distinct target
 //!   search/{a}-{b}.json       top-50 titles per two-char lowercase prefix
 //!   daily/{n}.json            per-difficulty dailies + the 3-hole round,
 //!                             pars and route counts baked in
+//!   compass/{n}.json          compass-lite: per goal, complete BFS levels
+//!                             of the ~50k nearest articles, delta-encoded
 
 use std::collections::HashMap;
 use std::fs;
@@ -68,6 +71,45 @@ struct Args {
     /// of no-repeat feel for one map-sized download.
     #[arg(long, default_value_t = 5_000)]
     random_per_diff: usize,
+
+    /// Days ahead (past dailies always included) that get compass-lite
+    /// files: per goal, the ~50k articles nearest the goal as complete BFS
+    /// levels, delta-encoded. ~1-2 MB per day for its six goals. 0 disables.
+    /// A full decade would double the tree, which is why this window is a
+    /// year while the dailies run ten — re-exports refresh it.
+    #[arg(long, default_value_t = 365)]
+    compass_days: u64,
+}
+
+/// Byte budget per compass goal, in article ids. ~50k ids delta-encoded is
+/// roughly 200 KB raw; six goals a day keeps the year's bundle near a
+/// gigabyte. Matches the live server's COMPASS_DEPTH of 6.
+const COMPASS_CAP: usize = 50_000;
+const COMPASS_DEPTH: u8 = 6;
+
+/// Sorted ids, delta-encoded: first id absolute, the rest gaps. Halves the
+/// JSON against absolute ids at this density.
+fn delta_encode(mut ids: Vec<u32>) -> Vec<u32> {
+    ids.sort_unstable();
+    let mut prev = 0u32;
+    for x in ids.iter_mut() {
+        let v = *x;
+        *x = v - prev;
+        prev = v;
+    }
+    ids
+}
+
+/// Truncate on a char boundary — the extras.rs lesson, not repeated.
+fn trunc(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 fn main() -> Result<()> {
@@ -115,6 +157,7 @@ fn main() -> Result<()> {
             "bounds": bounds,
             "views": !game.views.is_empty(),
             "pools": game.has_pools(),
+            "compass_days": a.compass_days,
             "static": true,
         }),
     )?;
@@ -153,13 +196,27 @@ fn main() -> Result<()> {
         let lo = s * SHARD_SIZE;
         let hi = ((s + 1) * SHARD_SIZE).min(n);
         let mut entries = Vec::with_capacity(hi - lo);
+        // One dictionary per shard for what the link rows need about their
+        // targets — description and flags — deduped across the shard's
+        // sources. Denormalizing onto every link row was measured at nearly
+        // double the tree; the dict pays each target once per shard.
+        let mut dict: std::collections::BTreeMap<u32, serde_json::Value> = Default::default();
         for id in lo as u32..hi as u32 {
             let (x, y, c) = coord(id);
             let links: Vec<_> = g
                 .forward
                 .neighbors(id)
                 .iter()
-                .map(|&w| json!([w, g.title(w), g.reverse.degree(w)]))
+                .map(|&w| {
+                    if !dict.contains_key(&w) {
+                        let desc = game.descs.get(w).first().map(|d| trunc(d, 72));
+                        let flags = game.flags.get(w as usize).copied().unwrap_or(0);
+                        if desc.is_some() || flags != 0 {
+                            dict.insert(w, json!([desc, flags]));
+                        }
+                    }
+                    json!([w, g.title(w), g.reverse.degree(w)])
+                })
                 .collect();
             entries.push(json!([
                 id,
@@ -175,7 +232,12 @@ fn main() -> Result<()> {
                 links,
             ]));
         }
-        shard_bytes += write_json(&a.out.join(format!("shards/{s}.json")), &json!(entries))?;
+        let dict: serde_json::Map<String, serde_json::Value> =
+            dict.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        shard_bytes += write_json(
+            &a.out.join(format!("shards/{s}.json")),
+            &json!({"a": entries, "d": dict}),
+        )?;
         if s % 500 == 0 {
             eprintln!("  shard {s}/{n_shards}…");
         }
@@ -252,20 +314,30 @@ fn main() -> Result<()> {
 
     // ---- dailies + rounds, archive and future -----------------------------
     let first = if a.archive { 1 } else { today_number };
+    let compass_last = if a.compass_days > 0 { today_number + a.compass_days } else { 0 };
+    if compass_last >= first {
+        fs::create_dir_all(a.out.join("compass"))?;
+    }
     let mut n_daily = 0u64;
+    let (mut n_compass, mut compass_bytes) = (0u64, 0u64);
     for number in first..=today_number + a.days {
         let day = DAILY_EPOCH_DAY + number - 1;
+        // The six goals a day owns: one per difficulty, one per hole. Their
+        // compass files are keyed the same way the client asks for them.
+        let mut goals: Vec<(String, u32)> = Vec::with_capacity(6);
         let mut difficulties = serde_json::Map::new();
         for d in [Difficulty::Easy, Difficulty::Medium, Difficulty::Hard] {
             let name = format!("{d:?}").to_lowercase();
             if let Some(p) = game.seeded_puzzle(&mut pf, d, daily_seed(day, d)) {
+                goals.push((name.clone(), p.goal));
                 difficulties.insert(name, puzzle_json(&game, &mut pf, &p));
             }
         }
         let mut rng = Rng::new(course_seed(day, COURSE_3.len()));
         let mut holes = Vec::with_capacity(COURSE_3.len());
-        for &par in &COURSE_3 {
+        for (i, &par) in COURSE_3.iter().enumerate() {
             if let Some(p) = game.course_hole(&mut pf, par, &mut rng) {
+                goals.push((format!("h{}", i + 1), p.goal));
                 holes.push(puzzle_json(&game, &mut pf, &p));
             }
         }
@@ -279,11 +351,31 @@ fn main() -> Result<()> {
             }),
         )?;
         n_daily += 1;
+        if number <= compass_last {
+            let mut obj = serde_json::Map::new();
+            for (key, goal) in goals {
+                let levels =
+                    wiki_parser::graph::near_goal_levels(g, goal, COMPASS_DEPTH, COMPASS_CAP);
+                let d = levels.len();
+                let l: Vec<_> =
+                    levels.into_iter().map(|lvl| json!(delta_encode(lvl))).collect();
+                obj.insert(key, json!({"d": d, "l": l}));
+            }
+            compass_bytes +=
+                write_json(&a.out.join(format!("compass/{number}.json")), &json!(obj))?;
+            n_compass += 1;
+        }
     }
     eprintln!(
         "  {n_daily} daily files (archive from #{first}, {} days ahead)",
         a.days
     );
+    if n_compass > 0 {
+        eprintln!(
+            "  {n_compass} compass files, {:.2} GB raw",
+            compass_bytes as f64 / 1e9
+        );
+    }
     eprintln!("done in {:.1?} → {}", t0.elapsed(), a.out.display());
     Ok(())
 }

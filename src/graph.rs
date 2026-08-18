@@ -601,6 +601,42 @@ impl PathFinder {
     }
 }
 
+/// Distance-to-goal levels for the static compass, truncated to a byte
+/// budget: complete BFS levels only, stopping before the level that would
+/// push the total past `cap`. `levels[i]` holds every article at distance
+/// i+1; anything absent is honestly "further than levels.len()". Level 1 is
+/// always complete even past the cap — truncating the direct in-neighbours
+/// would label a one-click finish as "far", which is worse than a big file.
+pub fn near_goal_levels(g: &Graph, goal: u32, max_depth: u8, cap: usize) -> Vec<Vec<u32>> {
+    let n = g.len();
+    if goal as usize >= n {
+        return Vec::new();
+    }
+    let mut seen = vec![false; n];
+    seen[goal as usize] = true;
+    let mut levels: Vec<Vec<u32>> = Vec::new();
+    let mut cur = vec![goal];
+    let mut total = 0usize;
+    for depth in 1..=max_depth {
+        let mut next = Vec::new();
+        for &v in &cur {
+            for &w in g.reverse.neighbors(v) {
+                if !seen[w as usize] {
+                    seen[w as usize] = true;
+                    next.push(w);
+                }
+            }
+        }
+        if next.is_empty() || (depth > 1 && total + next.len() > cap) {
+            break;
+        }
+        total += next.len();
+        cur = next.clone();
+        levels.push(next);
+    }
+    levels
+}
+
 #[cfg(test)]
 pub(crate) mod tests_support {
     use super::*;
@@ -761,6 +797,44 @@ mod counting_tests {
             frontier = next;
         }
         None
+    }
+
+    /// The truncated level BFS must agree with the full distance map on
+    /// every level it emits, and may only omit whole levels past the cap —
+    /// never individual articles, which would show a close link as "far".
+    #[test]
+    fn near_goal_levels_match_the_full_distance_map() {
+        let mut seed = 0x0FED_CBA9_8765_4321u64;
+        let mut rand = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as u32
+        };
+        for trial in 0..40 {
+            let n = 8 + (rand() % 20);
+            let m = n * (1 + rand() % 4);
+            let edges: Vec<(u32, u32)> = (0..m)
+                .map(|_| (rand() % n, rand() % n))
+                .filter(|(a, b)| a != b)
+                .collect();
+            let g = graph(n, &edges);
+            let mut pf = PathFinder::new(g.len());
+            for goal in 0..n {
+                let dist = pf.distances_to(&g, goal, 6);
+                for cap in [2usize, 10, 100_000] {
+                    let levels = near_goal_levels(&g, goal, 6, cap);
+                    for (i, lvl) in levels.iter().enumerate() {
+                        let want: Vec<u32> =
+                            (0..n).filter(|&v| dist[v as usize] == (i + 1) as u8).collect();
+                        let mut got = lvl.clone();
+                        got.sort_unstable();
+                        assert_eq!(got, want, "trial {trial} goal {goal} cap {cap} level {}", i + 1);
+                    }
+                    let total: usize = levels.iter().map(|l| l.len()).sum();
+                    let l1 = levels.first().map_or(0, |l| l.len());
+                    assert!(total <= cap.max(l1), "trial {trial} goal {goal} cap {cap} total {total}");
+                }
+            }
+        }
     }
 
     /// The meet-in-the-middle counter must agree with the oracle on every
