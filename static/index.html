@@ -538,7 +538,7 @@
       <input type="range" id="hubs" min="0" max="5" step="1" value="2">
       <div id="hubwhat"></div>
     </div>
-    <input id="search" placeholder="Search an article to jump there&hellip;">
+    <input id="search" placeholder="Search an article to jump there (voids the score)&hellip;">
     <div id="hits"></div>
 
     <details id="custom">
@@ -640,6 +640,7 @@ const blank = () => ({
   goal:null, cur:null, trail:[], steps:[], par:null, ban:null, run:null,
   done:false, started:null, elapsed:0, number:null, difficulty:'easy', share:'',
   veil:null, pauseAt:0, url:'',
+  jumped:false,           // a search jump moved the start: the run can't be scored
   compass:0, dist:null,   // charges left, and id -> clicks-to-goal for this article
   best:null,              // the optimal route, drawn on the map once the race ends
   group:true,
@@ -702,7 +703,7 @@ async function sj(path) {
 
 function sIssue(p, number, ckey, charges) {
   const run = S_NEXTRUN++;
-  S_RUNS.set(run, { routes: p.routes ?? 0, number, ckey, charges,
+  S_RUNS.set(run, { routes: p.routes ?? 0, par: p.par, number, ckey, charges,
                     goal: p.goal ? p.goal.id : null });
   return run;
 }
@@ -809,16 +810,23 @@ async function staticApi(p, o) {
     const dif = q.get('difficulty') || 'easy';
     const rp = await sj(`random/${dif}.json`);
     const r = rp.races[Math.floor(Math.random() * rp.races.length)];
-    const [sid, st, gid, gt, par, routes] = r;
-    return sPuzzle({ start: { id: sid, title: st, in_degree: 0 },
-      goal: { id: gid, title: gt, in_degree: 0 },
-      par, routes, ban_degree: rp.ban_degree }, dif, null, meta);
+    // v2 pool rows are {start, goal, par, routes} with full article objects
+    // (desc, in_degree, views, x/y — the goal card and red map dot need
+    // them). v1 rows were bare tuples; a cached file can still serve one.
+    const raw = Array.isArray(r)
+      ? { start: { id: r[0], title: r[1] }, goal: { id: r[2], title: r[3] },
+          par: r[4], routes: r[5] }
+      : r;
+    return sPuzzle({ ...raw, ban_degree: rp.ban_degree }, dif, null, meta);
   }
 
   if (path === '/api/routes') {
     const r = S_RUNS.get(+q.get('run'));
     if (!r) throw new Error('unknown or expired run');
-    return { routes: r.routes, exact: true };
+    // Mirror the live response: the card says "N different ${clicks}-click
+    // routes", and pool counts saturate at u32::MAX ("at least this many").
+    return { routes: r.routes, clicks: r.par,
+             saturated: r.routes >= 4294967295, exact: true };
   }
 
   if (path === '/api/search') {
@@ -1320,20 +1328,23 @@ async function finish(won) {
   const clicks = state.trail.length-1, par = state.par;
 
   // Golf terms, because the game is golf. Par is the optimal route, so
-  // under-par cannot exist — matching it is the perfect score, and every
-  // click past it is a stroke.
+  // under-par cannot exist honestly — a run that shows it was jumped, and a
+  // jumped run is not scored at all.
   const golf = clicks===par ? 'Par ⛳' : clicks===par+1 ? 'Bogey'
-    : clicks===par+2 ? 'Double bogey' : `+${clicks-par} over par`;
-  $('verdict').textContent = !won ? 'Gave up' : golf;
+    : clicks===par+2 ? 'Double bogey' : clicks>par ? `+${clicks-par} over par`
+    : `${par-clicks} under par?!`;
+  const scored = won && !state.jumped;
+  $('verdict').textContent = !won ? 'Gave up'
+    : state.jumped ? 'Found it — unscored (search jump)' : golf;
   $('score').innerHTML = won
-    ? `<b>${clicks}</b> clicks &nbsp;·&nbsp; par <b>${par}</b> &nbsp;·&nbsp; <b>${mmss(state.elapsed)}</b>`
+    ? `<b>${clicks}</b> click${clicks===1?'':'s'} &nbsp;·&nbsp; par <b>${par}</b> &nbsp;·&nbsp; <b>${mmss(state.elapsed)}</b>`
     : `par was <b>${par}</b>`;
 
   // Daily streak, tracked on this device: consecutive daily numbers won.
   // localStorage rather than the server, so it needs no account and costs
   // nothing — the tradeoff is that clearing the browser clears the streak.
   let streak = 0;
-  if (won && state.number != null && !state.archive) {
+  if (scored && state.number != null && !state.archive) {
     let s = {};
     try { s = JSON.parse(localStorage.getItem('wr-streak')) || {}; } catch {}
     if (s.last !== state.number) {
@@ -1349,15 +1360,17 @@ async function finish(won) {
 
   // Green while inside par, red for every click past it.
   const sq = state.steps.map(s => s?'🟩':'🟥');
-  $('squares').textContent = won ? sq.join('') : '';
+  $('squares').textContent = scored ? sq.join('') : '';
   state.share = (state.number?`WikiGolf #${state.number}`:'WikiGolf')+
     ` (${state.difficulty})`+(streak>1?` · 🔥${streak}-day streak`:'')+`\n`+
-    (won ? `${golf} — ${clicks} clicks, par ${par} · ${mmss(state.elapsed)}\n${sq.join('')}` : `gave up · par ${par}`)+
+    (scored ? `${golf} — ${clicks} click${clicks===1?'':'s'}, par ${par} · ${mmss(state.elapsed)}\n${sq.join('')}`
+      : won ? `found it after a search jump — unscored · par ${par}`
+      : `gave up · par ${par}`)+
     (state.url ? `\n${state.url}` : '');
 
-  // Only a completed run can be submitted, and only the server decides
-  // whether it counts.
-  $('post').disabled = !won;
+  // Only a completed, unjumped run can be submitted — and even then only
+  // the server decides whether it counts (it re-walks the path).
+  $('post').disabled = !scored;
   loadBoard();
   $('posted').textContent = '';
   $('nick').value = localStorage.getItem('wr-nick') || '';
@@ -1366,13 +1379,16 @@ async function finish(won) {
   $('replay').style.display = 'none';
   $('routes').textContent = 'counting routes…';
   $('route').innerHTML = '<div class="empty">finding&hellip;</div>';
+  // No mode name here: medium and hard both ban hubs (at different levels),
+  // so naming one mislabels the other — state the rule, not a label.
   $('note').textContent = state.ban
-    ? `Hard mode: routes through articles with more than ${state.ban.toLocaleString()} inbound links were banned for both you and the optimal route.`
+    ? `Routes through articles with more than ${state.ban.toLocaleString()} inbound links were banned for both you and the optimal route.`
     : '';
   $('result').style.display='grid';
   if (STATIC) $('dailydist').textContent = '';
   if (ROUND) {
-    roundHoleDone(won, clicks, par);
+    // A jumped hole is a pickup: you didn't play it from the tee.
+    roundHoleDone(scored, clicks, par);
     if (ROUND.idx + 1 < ROUND.holes.length) {
       // Mid-round: the verdict is the hole, the button is the next tee.
       $('verdict').textContent += `  ·  hole ${ROUND.idx+1}/${ROUND.holes.length}`;
@@ -1506,9 +1522,10 @@ async function adoptPuzzle(p, opts) {
     startId:p.start.id,
     number:p.number??null, difficulty:p.difficulty||opts.difficulty, compass:p.compass??0 });
   $('goal').textContent = p.goal.title;
-  $('goalmeta').textContent = (p.goal.desc ? `${p.goal.desc} · ` : '')
-    + `${p.goal.in_degree.toLocaleString()} inbound links`
-    + (p.goal.views ? ` · ${fmtViews(p.goal.views)} reads/mo` : '');
+  $('goalmeta').textContent = [p.goal.desc,
+    p.goal.in_degree != null ? `${p.goal.in_degree.toLocaleString()} inbound links` : '',
+    p.goal.views ? `${fmtViews(p.goal.views)} reads/mo` : ''
+  ].filter(Boolean).join(' · ');
   $('par').textContent = p.optimal;
   $('time').textContent = '0:00';
   $('pnum').textContent = ROUND
@@ -1936,8 +1953,12 @@ $('search').addEventListener('input', e => {
         $('hits').innerHTML=''; $('search').value='';
         if (!state.goal) return;
         // Jumping restarts the run: clear trail and step record together, or
-        // the share squares would describe hops no longer on the board.
+        // the share squares would describe hops no longer on the board. It
+        // also voids the score — you are no longer playing from the start, so
+        // "beating par" from here would be a lie (the live server rejects the
+        // leaderboard post for the same reason; the local card must agree).
         state.trail=[]; state.steps=[]; state.cur=null; state.done=false;
+        state.jumped=true;
         $('result').style.display='none';
         go(h.id).then(() => { setVeil(null); startClock(); });
       };

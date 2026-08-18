@@ -66,9 +66,9 @@ struct Args {
     #[arg(long, default_value_t = true)]
     archive: bool,
 
-    /// Pre-rolled random races per difficulty. Each costs ~80 bytes; 5,000
-    /// is ~130 KB compressed on the wire, fetched once per session — years
-    /// of no-repeat feel for one map-sized download.
+    /// Pre-rolled random races per difficulty. Each costs ~350 bytes (full
+    /// start/goal article objects); 5,000 is ~500 KB compressed on the wire,
+    /// fetched once per session — years of no-repeat feel for one download.
     #[arg(long, default_value_t = 5_000)]
     random_per_diff: usize,
 
@@ -289,9 +289,11 @@ fn main() -> Result<()> {
     eprintln!("  {n_prefixes} search prefixes in {n_files} bucket files");
 
     // ---- random race pools ------------------------------------------------
-    // 1,500 pre-drawn races per difficulty, par and routes attached, so the
-    // static build's Random button works. Deterministic seed: the file is
-    // reproducible from the same pools.
+    // Pre-drawn races per difficulty, par and routes attached, so the static
+    // build's Random button works. Deterministic seed: the file is
+    // reproducible from the same pools. Start/goal are full article objects
+    // (not id/title tuples) — the goal card and the map's red dot need
+    // desc, in-degree, views and x/y, exactly like a daily's.
     if game.has_pools() {
         fs::create_dir_all(a.out.join("random"))?;
         for d in [Difficulty::Easy, Difficulty::Medium, Difficulty::Hard] {
@@ -300,9 +302,12 @@ fn main() -> Result<()> {
             let mut rows = Vec::with_capacity(a.random_per_diff);
             for _ in 0..a.random_per_diff {
                 if let Some((src, dst, par, routes)) = game.pools_pick_full(d, &mut rng) {
-                    rows.push(json!([
-                        src, g.title(src), dst, g.title(dst), par, routes
-                    ]));
+                    rows.push(json!({
+                        "start": art_json(&game, src),
+                        "goal": art_json(&game, dst),
+                        "par": par,
+                        "routes": routes,
+                    }));
                 }
             }
             write_json(
@@ -399,20 +404,33 @@ fn puzzle_json(
     }
     .map(|(_, c)| c)
     .unwrap_or(0);
-    let art = |id: u32| {
-        json!({
-            "id": id,
-            "title": game.graph.title(id),
-            "desc": game.descs.get(id).first(),
-            "in_degree": game.graph.reverse.degree(id),
-        })
-    };
+    let art = |id: u32| art_json(game, id);
     json!({
         "start": art(p.start),
         "goal": art(p.goal),
         "par": p.optimal,
         "ban_degree": p.ban_degree,
         "routes": routes,
+    })
+}
+
+/// A puzzle endpoint's article object, matching the fields the client reads
+/// from the live server's ArticleRef: the goal card shows desc, in-degree and
+/// reads/mo, and the map's red goal dot needs x/y (null off-layout articles
+/// simply draw no dot, same as live).
+fn art_json(game: &Game, id: u32) -> serde_json::Value {
+    let (x, y) = match game.coords(id) {
+        Some((x, y, _)) => (Some(x), Some(y)),
+        None => (None, None),
+    };
+    json!({
+        "id": id,
+        "title": game.graph.title(id),
+        "desc": game.descs.get(id).first(),
+        "in_degree": game.graph.reverse.degree(id),
+        "views": game.views.get(id as usize),
+        "x": x,
+        "y": y,
     })
 }
 
