@@ -705,9 +705,16 @@ async function staticApi(p, o) {
   }
 
   if (path === '/api/daily' || path === '/api/course') {
-    const number = q.get('number') || meta.today_number;
-    if (+number > meta.today_number + meta.days_ahead)
-      throw new Error('that daily is beyond what this build carries');
+    // Today comes from the CLIENT clock, not meta.json — the exported
+    // today_number is frozen at export time, and using it served the same
+    // daily forever. day0 is the shared epoch both sides derive from.
+    const todayNum = Math.floor(Date.now() / 86400000) - meta.day0 + 1;
+    const number = +(q.get('number') || todayNum);
+    if (number < 1) throw new Error('that daily does not exist');
+    if (number > meta.today_number + meta.days_ahead)
+      throw new Error(number <= todayNum
+        ? 'this build has gone stale — it needs a re-export and redeploy'
+        : 'that daily does not exist yet');
     const d = await sj(`daily/${number}.json`);
     if (path === '/api/daily') {
       const dif = q.get('difficulty') || 'medium';
