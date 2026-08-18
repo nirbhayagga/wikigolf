@@ -19,7 +19,7 @@
 //!   daily/{n}.json            per-difficulty dailies + the 3-hole round,
 //!                             pars and route counts baked in
 //!   compass/{n}.json          compass-lite: per goal, complete BFS levels
-//!                             of the ~50k nearest articles, delta-encoded
+//!                             of the ~250k nearest articles, delta-encoded
 
 use std::collections::HashMap;
 use std::fs;
@@ -73,18 +73,19 @@ struct Args {
     random_per_diff: usize,
 
     /// Days ahead (past dailies always included) that get compass-lite
-    /// files: per goal, the ~50k articles nearest the goal as complete BFS
-    /// levels, delta-encoded. ~1-2 MB per day for its six goals. 0 disables.
+    /// files: per goal, the ~250k articles nearest the goal as complete BFS
+    /// levels, delta-encoded. ~1-4 MB per day for its six goals. 0 disables.
     /// A full decade would double the tree, which is why this window is a
     /// year while the dailies run ten — re-exports refresh it.
     #[arg(long, default_value_t = 365)]
     compass_days: u64,
 }
 
-/// Byte budget per compass goal, in article ids. ~50k ids delta-encoded is
-/// roughly 200 KB raw; six goals a day keeps the year's bundle near a
-/// gigabyte. Matches the live server's COMPASS_DEPTH of 6.
-const COMPASS_CAP: usize = 50_000;
+/// Budget per compass goal, in article ids. At enwiki fan-out a 50k cap
+/// left typical dailies at depth 1 — "1 to go" and nothing else — because
+/// level 2 alone often exceeds it. 250k restores depth 2-3 on most goals
+/// for ~300 KB gzipped per press, a price only paid on the press.
+const COMPASS_CAP: usize = 250_000;
 const COMPASS_DEPTH: u8 = 6;
 
 /// Sorted ids, delta-encoded: first id absolute, the rest gaps. Halves the
