@@ -467,7 +467,10 @@ impl Rng {
 /// Day zero of the daily numbering. Shared by the server and the static
 /// exporter — two copies of this constant would eventually disagree about
 /// what day it is, which is the worst possible bug for a daily game.
-pub const DAILY_EPOCH_DAY: u64 = 20_454;
+/// Reset to launch day (18 Aug 2026 UTC) so the public site opened on
+/// daily #1 instead of implying 229 days of history that never happened.
+/// Moving this regenerates every daily: seeds key on the absolute day.
+pub const DAILY_EPOCH_DAY: u64 = 20_683;
 
 pub fn today_day() -> u64 {
     std::time::SystemTime::now()
