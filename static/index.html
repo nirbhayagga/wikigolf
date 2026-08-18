@@ -548,7 +548,7 @@
   <div id="linkwrap">
     <div id="linkbar">
       <input id="lfilter" placeholder="Filter these links&hellip;">
-      <label class="gtog" title="Group links by the map region they belong to">
+      <label class="gtog" title="Group links by the map region they belong to (with the default sort; picking another sort shows a flat sorted list)">
         <input type="checkbox" id="lgroup" checked> group
       </label>
       <label class="lbl2" title="Categories and link counts on each row">
@@ -1141,7 +1141,11 @@ function paintLinks() {
   // sentences that say what they are; stripping the prose removes exactly that
   // signal. The regions are the next best thing we already have, and they are
   // the same ones the map is coloured by — so the list teaches the map.
-  if (state.group && !q && !state.dist) {
+  //
+  // An explicit sort choice wins over grouping: inside region buckets an A→Z
+  // or most-read order is invisible, so honouring both at once honours
+  // neither. Groups return when the sort goes back to its default.
+  if (state.group && !q && !state.dist && mode === 'deg') {
     const by = new Map();
     for (const l of links) {
       const c = l.community ?? null;
