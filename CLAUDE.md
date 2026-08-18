@@ -61,6 +61,8 @@ cargo build --release --bin pools
 ./target/release/pools --data data
 
 # Static build: the whole game as files for free hosting (Cloudflare Pages).
+# Shards are {a: entries, d: per-target desc+flags dict}; compass-lite files
+# (--compass-days, default 365 + archive) give dailies/rounds a real compass.
 # Needs pools.parquet for the Random button. Dailies pre-generate a year
 # ahead by default (~2 KB each; --days 3650 = a decade, still under Pages'
 # 20k-file cap) and advance on the visitor's clock via the shared epoch.
