@@ -1253,12 +1253,33 @@ fn read_u32_column(path: &Path, n: usize, what: &str) -> Result<Vec<u32>> {
 /// chose, and "living people" is the same non-name as "Living people".
 fn vacuous_region_name(name: &str) -> bool {
     let n = name.trim();
-    n.eq_ignore_ascii_case("living people")
-        || {
-            let lower = n.to_ascii_lowercase();
-            (lower.ends_with(" births") || lower.ends_with(" deaths"))
-                && n.chars().take_while(|c| c.is_ascii_digit()).count() >= 3
+    let lower = n.to_ascii_lowercase();
+    if lower == "living people" || lower == "possibly living people" {
+        return true;
+    }
+    // Once "Living people" is banned, a biography region's runner-up vote
+    // goes to the next-biggest category — which is another maintenance
+    // flavour of the same non-name. Ban the family, not the instance.
+    if lower.ends_with("(living people)") {
+        return true;
+    }
+    if ["of birth missing", "of death missing", "of birth unknown",
+        "of death unknown", "of birth uncertain", "of death uncertain"]
+        .iter()
+        .any(|p| lower.contains(p))
+    {
+        return true;
+    }
+    // "Deaths in 2020", "Lists of deaths in 2019" — year-indexed obituary
+    // rolls. The digit check keeps real names like "Deaths in police
+    // custody".
+    if let Some(i) = lower.find("deaths in ") {
+        if lower[i + 10..].chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            return true;
         }
+    }
+    (lower.ends_with(" births") || lower.ends_with(" deaths"))
+        && n.chars().take_while(|c| c.is_ascii_digit()).count() >= 3
 }
 
 /// LLM labels sometimes append the region's dominant category in
@@ -1451,6 +1472,32 @@ mod region_name_tests {
         assert_eq!(names[&0], "Physicists");
         assert_eq!(names[&1], "Jazz musicians");
         assert_eq!(names[&2], "Trumpeters");
+    }
+
+    #[test]
+    fn the_maintenance_category_family_is_vacuous() {
+        for bad in [
+            "Living people",
+            "Possibly living people",
+            "Place of birth missing (living people)",
+            "Year of birth missing (living people)",
+            "Year of birth missing",
+            "Date of death unknown",
+            "Lists of deaths in 2026",
+            "Deaths in 2020",
+            "1953 births",
+            "2004 deaths",
+        ] {
+            assert!(vacuous_region_name(bad), "{bad} should be vacuous");
+        }
+        for good in [
+            "Deaths in police custody",
+            "Mercury (planet)",
+            "Jazz musicians",
+            "American film actresses",
+        ] {
+            assert!(!vacuous_region_name(good), "{good} should be a real name");
+        }
     }
 
     #[test]
