@@ -723,7 +723,11 @@ function sPuzzle(raw, difficulty, number, meta, goalCompass) {
   // clamp(par - 2, 1, 4).
   const ckey = difficulty.startsWith('round-h')
     ? 'h' + difficulty.slice('round-h'.length) : difficulty;
-  const avail = meta && (meta.compass_days ?? 0) > 0 && (goalCompass
+  // cd is the goal's compass depth, baked at export. Below 2 the compass
+  // can only say ">1" on every link, so it is not offered at all.
+  const avail = meta && (meta.compass_days ?? 0) > 0
+    && (raw.cd == null || raw.cd >= 2)
+    && (goalCompass
     || (number != null
         && number >= 1 && number <= meta.today_number + meta.compass_days));
   const charges = avail ? Math.min(Math.max(raw.par - 2, 1), 4) : 0;
