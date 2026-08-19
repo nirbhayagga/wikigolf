@@ -372,6 +372,21 @@ and the method is not documented publicly, so nothing here is derived from it.
 This is an independent implementation: Rust for parsing and the game, graph-tool
 and igraph for layout and communities, Datashader for rendering.
 
+## Run it yourself
+
+The full game runs from one container and ~1.8 GB of data (attached to the
+GitHub release; CC BY-SA 4.0, derived from the English Wikipedia dump of
+1 Aug 2026):
+
+```bash
+gh release download v1.0.0 --pattern '*.parquet' --dir data
+docker run -d -p 8080:8080 -v ./data:/data:ro ghcr.io/OWNER/wikigolf:latest
+# ~7 GB RAM, ~2 minutes to load, then http://localhost:8080
+```
+
+`titles` + `edges` are required; the rest degrade gracefully. Add
+`--no-alias-search` to the command line inside the container to save ~450 MB.
+
 ## License
 
 [AGPL-3.0-or-later](LICENSE). Run it, fork it, learn from it; if you host a
