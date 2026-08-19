@@ -385,7 +385,7 @@ GitHub release; CC BY-SA 4.0, derived from the English Wikipedia dump of
 
 ```bash
 gh release download v1.0.0 --pattern '*.parquet' --dir data
-docker run -d -p 8080:8080 -v ./data:/data:ro ghcr.io/OWNER/wikigolf:latest
+docker run -d -p 8080:8080 -v ./data:/data:ro ghcr.io/nirbhayagga/wikigolf:latest
 # ~7 GB RAM, ~2 minutes to load, then http://localhost:8080
 ```
 
