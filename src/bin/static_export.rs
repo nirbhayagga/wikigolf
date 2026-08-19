@@ -88,7 +88,22 @@ struct Args {
 /// level 2 alone often exceeds it. 250k restores depth 2-3 on most goals
 /// for ~300 KB gzipped per press, a price only paid on the press.
 const COMPASS_CAP: usize = 250_000;
+/// Depth 1 is a useless compass (">1" on every link — Veracruz→Silurian in
+/// playtesting). A goal that can't fit level 2 in the normal budget gets one
+/// retry with this one; 17% of pool goals needed it at enwiki. Goals whose
+/// level 2 exceeds even this stay at depth 1, honestly — that is what a
+/// mega-hub goal costs.
+const COMPASS_RESCUE_CAP: usize = 1_000_000;
 const COMPASS_DEPTH: u8 = 6;
+
+/// Compass levels for one goal, with the depth-1 rescue applied.
+fn goal_levels(g: &wiki_parser::graph::Graph, goal: u32) -> Vec<Vec<u32>> {
+    let levels = wiki_parser::graph::near_goal_levels(g, goal, COMPASS_DEPTH, COMPASS_CAP);
+    if levels.len() >= 2 {
+        return levels;
+    }
+    wiki_parser::graph::near_goal_levels(g, goal, COMPASS_DEPTH, COMPASS_RESCUE_CAP)
+}
 
 /// Sorted ids, delta-encoded: first id absolute, the rest gaps. Halves the
 /// JSON against absolute ids at this density.
@@ -298,8 +313,7 @@ fn main() -> Result<()> {
             let mut bytes = 0u64;
             let n_goals = pool_goals.len();
             for goal in pool_goals {
-                let levels =
-                    wiki_parser::graph::near_goal_levels(g, goal, COMPASS_DEPTH, COMPASS_CAP);
+                let levels = goal_levels(g, goal);
                 let d = levels.len();
                 let l: Vec<_> = levels
                     .into_iter()
@@ -365,8 +379,7 @@ fn main() -> Result<()> {
         if number <= compass_last {
             let mut obj = serde_json::Map::new();
             for (key, goal) in goals {
-                let levels =
-                    wiki_parser::graph::near_goal_levels(g, goal, COMPASS_DEPTH, COMPASS_CAP);
+                let levels = goal_levels(g, goal);
                 let d = levels.len();
                 let l: Vec<_> = levels
                     .into_iter()

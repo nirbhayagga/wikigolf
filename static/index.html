@@ -1431,6 +1431,8 @@ async function finish(won) {
     body: JSON.stringify({ from, to: state.goal.id, ban_degree: state.ban }) });
 
   try {
+    // Static already filled the route box from the baked route above; the
+    // throw skips the live lookup, and the catch below must not wipe it.
     if (STATIC) throw new Error('static');
     const p = await ask(state.trail[0].id);
     if (p.found) {
@@ -1443,13 +1445,15 @@ async function finish(won) {
       if (p.path.filter(a => a.x != null).length > 1) $('replay').style.display = '';
       draw();
     } else $('route').innerHTML = '<div class="empty">no route exists</div>';
-  } catch { $('route').innerHTML=''; }
+  } catch { if (!STATIC) $('route').innerHTML=''; }
 
   // On a give-up, the route from the start is the least interesting answer —
   // you want to know what you should have done from where you actually got to.
   // Skipped when you never moved, since it would just repeat the block above.
+  // Live-only: static has no pathfinder, and unguarded this box unhid itself
+  // and printed "could not check" on every static give-up.
   const here = state.trail[state.trail.length-1];
-  if (!won && here && here.id !== state.trail[0].id) {
+  if (!STATIC && !won && here && here.id !== state.trail[0].id) {
     $('fromherebox').style.display = '';
     $('fromherelbl').textContent = `From ${here.title}`;
     $('fromhere').innerHTML = '<div class="empty">finding&hellip;</div>';
