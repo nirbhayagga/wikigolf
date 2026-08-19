@@ -55,8 +55,7 @@ impl Identity {
             }
         }
         let secret = random_bytes(32)?;
-        fs::write(&path, &secret)
-            .with_context(|| format!("writing {}", path.display()))?;
+        fs::write(&path, &secret).with_context(|| format!("writing {}", path.display()))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -98,9 +97,7 @@ impl Identity {
 
     /// The `Set-Cookie` header value for a freshly issued identity.
     pub fn cookie_header(value: &str, secure: bool) -> String {
-        let mut s = format!(
-            "{COOKIE}={value}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax"
-        );
+        let mut s = format!("{COOKIE}={value}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax");
         if secure {
             s.push_str("; Secure");
         }
@@ -128,7 +125,9 @@ mod tests {
     use super::*;
 
     fn ident() -> Identity {
-        Identity { secret: vec![7u8; 32] }
+        Identity {
+            secret: vec![7u8; 32],
+        }
     }
 
     #[test]
@@ -156,7 +155,10 @@ mod tests {
     fn unsigned_and_malformed_are_rejected() {
         let i = ident();
         assert_eq!(i.verify("deadbeef"), None);
-        assert_eq!(i.verify(&format!("{}.{}", "a".repeat(32), "0".repeat(32))), None);
+        assert_eq!(
+            i.verify(&format!("{}.{}", "a".repeat(32), "0".repeat(32))),
+            None
+        );
         assert_eq!(i.verify("zz.00"), None);
         assert_eq!(i.verify(""), None);
     }
@@ -164,14 +166,19 @@ mod tests {
     #[test]
     fn a_different_secret_cannot_sign_for_us() {
         let a = ident();
-        let b = Identity { secret: vec![9u8; 32] };
+        let b = Identity {
+            secret: vec![9u8; 32],
+        };
         let c = b.issue().unwrap();
         assert_eq!(a.verify(&c), None);
     }
 
     #[test]
     fn cookie_is_parsed_out_of_a_crowded_header() {
-        assert_eq!(Identity::from_header("foo=1; wr_id=abc.def; bar=2"), Some("abc.def"));
+        assert_eq!(
+            Identity::from_header("foo=1; wr_id=abc.def; bar=2"),
+            Some("abc.def")
+        );
         assert_eq!(Identity::from_header("wr_id=x"), Some("x"));
         assert_eq!(Identity::from_header("other=1"), None);
     }

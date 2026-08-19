@@ -88,21 +88,24 @@ impl TitleIndex {
     /// Iterate `(redirect_title, article_id)` for every redirect that resolves.
     /// Useful later for search-by-alias in the viewer and the pathfinder.
     pub fn redirects(&self) -> impl Iterator<Item = (&str, u32)> {
-        self.names.iter().enumerate().filter_map(move |(raw, name)| {
-            if !self.is_redirect[raw] {
-                return None;
-            }
-            let target = self.resolved[raw];
-            if target == NONE {
-                return None;
-            }
-            let id = self.article_id[target as usize];
-            if id == NONE {
-                None
-            } else {
-                Some((&**name, id))
-            }
-        })
+        self.names
+            .iter()
+            .enumerate()
+            .filter_map(move |(raw, name)| {
+                if !self.is_redirect[raw] {
+                    return None;
+                }
+                let target = self.resolved[raw];
+                if target == NONE {
+                    return None;
+                }
+                let id = self.article_id[target as usize];
+                if id == NONE {
+                    None
+                } else {
+                    Some((&**name, id))
+                }
+            })
     }
 }
 
@@ -147,8 +150,7 @@ pub fn build<R: BufRead>(input: R) -> Result<(TitleIndex, DumpStats, Pass1Stats)
         match &p.redirect {
             Some(target) => {
                 is_redirect[id as usize] = true;
-                redirect_raw[id as usize] =
-                    normalize_title(target).map(|t| t.into_boxed_str());
+                redirect_raw[id as usize] = normalize_title(target).map(|t| t.into_boxed_str());
                 st.redirects += 1;
             }
             None => st.articles += 1,
@@ -202,7 +204,14 @@ pub fn build<R: BufRead>(input: R) -> Result<(TitleIndex, DumpStats, Pass1Stats)
     }
 
     Ok((
-        TitleIndex { map, names, is_redirect, resolved, article_id, n_articles: next },
+        TitleIndex {
+            map,
+            names,
+            is_redirect,
+            resolved,
+            article_id,
+            n_articles: next,
+        },
         dump_stats,
         st,
     ))
@@ -236,7 +245,10 @@ mod tests {
     #[test]
     fn counts_articles_and_redirects() {
         let (i, s) = idx();
-        assert_eq!(s.articles, 3, "Anarchism, Political philosophy, Computer accessibility");
+        assert_eq!(
+            s.articles, 3,
+            "Anarchism, Political philosophy, Computer accessibility"
+        );
         assert_eq!(s.redirects, 3);
         assert_eq!(i.n_articles, 3);
     }

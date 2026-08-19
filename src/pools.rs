@@ -81,7 +81,9 @@ pub struct Pools {
 
 impl Pools {
     pub fn empty() -> Pools {
-        Pools { buckets: Default::default() }
+        Pools {
+            buckets: Default::default(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -102,7 +104,13 @@ impl Pools {
     pub fn pick(&self, d: Difficulty, rng: &mut Rng) -> Option<(u32, u32)> {
         let di = diff_index(d);
         let total: u64 = (0..PAR_SPAN)
-            .map(|i| if self.buckets[di][i].is_empty() { 0 } else { WEIGHTS[di][i] })
+            .map(|i| {
+                if self.buckets[di][i].is_empty() {
+                    0
+                } else {
+                    WEIGHTS[di][i]
+                }
+            })
             .sum();
         if total == 0 {
             return None;
@@ -136,7 +144,13 @@ impl Pools {
         let di = diff_index(d);
         let (_, min_len) = d.rules();
         let total: u64 = (0..PAR_SPAN)
-            .map(|i| if self.buckets[di][i].is_empty() { 0 } else { WEIGHTS[di][i] })
+            .map(|i| {
+                if self.buckets[di][i].is_empty() {
+                    0
+                } else {
+                    WEIGHTS[di][i]
+                }
+            })
             .sum();
         if total == 0 {
             return None;
@@ -313,7 +327,10 @@ impl Pools {
                 let (_, min_len) = diff_from_index(di).rules();
                 let par = p.value(i) as usize;
                 if par < min_len || par >= min_len + PAR_SPAN {
-                    bail!("pools row has par {par} outside {:?}'s range", diff_from_index(di));
+                    bail!(
+                        "pools row has par {par} outside {:?}'s range",
+                        diff_from_index(di)
+                    );
                 }
                 let (a, b) = (s.value(i), t.value(i));
                 if a as usize >= n_articles || b as usize >= n_articles {
@@ -438,9 +455,8 @@ pub fn attach_routes(
                 scope.spawn(move || {
                     let mut pf = PathFinder::new(graph.len());
                     let rev = &graph.reverse;
-                    let banned = move |v: u32| {
-                        ban_degree.is_some_and(|limit| rev.degree(v) > limit)
-                    };
+                    let banned =
+                        move |v: u32| ban_degree.is_some_and(|limit| rev.degree(v) > limit);
                     let mut out: [Vec<Pair>; PAR_SPAN] = Default::default();
                     loop {
                         let i = cursor.fetch_add(1, Ordering::Relaxed);
@@ -543,7 +559,17 @@ mod tests {
     fn line_with_hub() -> Graph {
         graph(
             6,
-            &[(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 4), (1, 5), (2, 5), (3, 5)],
+            &[
+                (0, 1),
+                (1, 2),
+                (2, 3),
+                (3, 4),
+                (0, 5),
+                (5, 4),
+                (1, 5),
+                (2, 5),
+                (3, 5),
+            ],
         )
     }
 
@@ -617,7 +643,9 @@ mod tests {
         assert!(Pools::load(&path, 101, 999).is_err());
         assert!(Pools::load(&path, 100, 1000).is_err());
         // A missing file is simply absent.
-        assert!(Pools::load(&dir.join("nope.parquet"), 1, 1).unwrap().is_none());
+        assert!(Pools::load(&dir.join("nope.parquet"), 1, 1)
+            .unwrap()
+            .is_none());
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -638,7 +666,10 @@ mod tests {
         // Determinism: same seed, same draw.
         let mut a = Rng::new(7);
         let mut b = Rng::new(7);
-        assert_eq!(p.pick(Difficulty::Medium, &mut a), p.pick(Difficulty::Medium, &mut b));
+        assert_eq!(
+            p.pick(Difficulty::Medium, &mut a),
+            p.pick(Difficulty::Medium, &mut b)
+        );
         assert!(Pools::empty().pick(Difficulty::Easy, &mut a).is_none());
     }
 }

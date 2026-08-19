@@ -14,7 +14,10 @@ use std::time::Instant;
 use wiki_parser::graph::{Graph, PathFinder};
 
 #[derive(Parser, Debug)]
-#[command(name = "pathfind", about = "Shortest wikilink path between two articles")]
+#[command(
+    name = "pathfind",
+    about = "Shortest wikilink path between two articles"
+)]
 struct Args {
     /// Start article title (redirects and aliases accepted)
     from: String,
@@ -68,9 +71,18 @@ fn main() -> Result<()> {
 
     match path {
         Some(p) => {
-            println!("\n{} -> {}   ({} clicks)", g.title(start), g.title(goal), p.len() - 1);
+            println!(
+                "\n{} -> {}   ({} clicks)",
+                g.title(start),
+                g.title(goal),
+                p.len() - 1
+            );
             for (i, &v) in p.iter().enumerate() {
-                println!("  {i:>2}. {}  (in-degree {})", g.title(v), g.reverse.degree(v));
+                println!(
+                    "  {i:>2}. {}  (in-degree {})",
+                    g.title(v),
+                    g.reverse.degree(v)
+                );
             }
             println!("\nfound in {:.3}s", secs);
         }

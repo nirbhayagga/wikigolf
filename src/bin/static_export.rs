@@ -1,12 +1,12 @@
 //! static_export — emit the game as a tree of static files.
 //!
-//! The static build serves the whole ritual (daily, round, archive, free
-//! navigation, search, the map) from any dumb file host — Cloudflare Pages'
-//! free tier being the target — at the cost of everything that needs a live
-//! graph: custom-pair par, the compass, leaderboards. See the runbook's
-//! "static build" section for the tradeoff table.
+//! The static build serves the whole ritual (daily, round, archive, random
+//! races, the compass, route reveals, the map) from any dumb file host —
+//! Cloudflare Pages' free tier being the target — at the cost of what needs
+//! a live graph: custom/topic races, search, leaderboards. See the
+//! runbook's "static build" section for the tradeoff table.
 //!
-//!   cargo run --release --bin static_export -- --data data --out static_site --days 45
+//!   cargo run --release --bin static_export -- --data data --out static_site
 //!
 //! Layout produced:
 //!   meta.json                 counts, shard scheme, day numbering
@@ -15,11 +15,14 @@
 //!   shards/{i}.json           {a: articles [i*S,(i+1)*S), d: target dict}
 //!                             — links denormalized, one fetch per click;
 //!                             d carries desc+flags per distinct target
-//!   search/{a}-{b}.json       top-50 titles per two-char lowercase prefix
+//!   random/{difficulty}.json  pre-rolled pool races, full article objects,
+//!                             one baked shortest route each
 //!   daily/{n}.json            per-difficulty dailies + the 3-hole round,
-//!                             pars and route counts baked in
-//!   compass/{n}.json          compass-lite: per goal, complete BFS levels
-//!                             of the ~250k nearest articles, delta-encoded
+//!                             pars, route counts and baked routes
+//!   compass/{n}.json          compass-lite per daily: per goal, complete
+//!                             BFS levels of the ~250k nearest articles,
+//!                             delta-encoded
+//!   compass/g{id}.json        the same, per random-pool goal
 
 use std::fs;
 use std::io::Write;
@@ -138,8 +141,10 @@ fn main() -> Result<()> {
             v.iter().copied().filter(|x| x.is_finite()).fold(init, f)
         };
         json!([
-            fold(&l.x, f32::MAX, f32::min), fold(&l.y, f32::MAX, f32::min),
-            fold(&l.x, f32::MIN, f32::max), fold(&l.y, f32::MIN, f32::max),
+            fold(&l.x, f32::MAX, f32::min),
+            fold(&l.y, f32::MAX, f32::min),
+            fold(&l.x, f32::MIN, f32::max),
+            fold(&l.y, f32::MIN, f32::max),
         ])
     });
     write_json(
@@ -207,11 +212,11 @@ fn main() -> Result<()> {
                 .neighbors(id)
                 .iter()
                 .map(|&w| {
-                    if !dict.contains_key(&w) {
+                    if let std::collections::btree_map::Entry::Vacant(e) = dict.entry(w) {
                         let desc = game.descs.get(w).first().map(|d| trunc(d, 72));
                         let flags = game.flags.get(w as usize).copied().unwrap_or(0);
                         if desc.is_some() || flags != 0 {
-                            dict.insert(w, json!([desc, flags]));
+                            e.insert(json!([desc, flags]));
                         }
                     }
                     json!([w, g.title(w), g.reverse.degree(w)])
@@ -241,7 +246,10 @@ fn main() -> Result<()> {
             eprintln!("  shard {s}/{n_shards}…");
         }
     }
-    eprintln!("  {n_shards} shards, {:.2} GB raw", shard_bytes as f64 / 1e9);
+    eprintln!(
+        "  {n_shards} shards, {:.2} GB raw",
+        shard_bytes as f64 / 1e9
+    );
 
     // No search buckets: the jump search bar is hidden on static (its only
     // function was mid-race teleporting, which voids the score and confused
@@ -280,7 +288,8 @@ fn main() -> Result<()> {
                 }
             }
             write_json(
-                &a.out.join(format!("random/{}.json", format!("{d:?}").to_lowercase())),
+                &a.out
+                    .join(format!("random/{}.json", format!("{d:?}").to_lowercase())),
                 &json!({"ban_degree": ban, "compass": with_compass, "races": rows}),
             )?;
         }
@@ -292,8 +301,10 @@ fn main() -> Result<()> {
                 let levels =
                     wiki_parser::graph::near_goal_levels(g, goal, COMPASS_DEPTH, COMPASS_CAP);
                 let d = levels.len();
-                let l: Vec<_> =
-                    levels.into_iter().map(|lvl| json!(delta_encode(lvl))).collect();
+                let l: Vec<_> = levels
+                    .into_iter()
+                    .map(|lvl| json!(delta_encode(lvl)))
+                    .collect();
                 bytes += write_json(
                     &a.out.join(format!("compass/g{goal}.json")),
                     &json!({"d": d, "l": l}),
@@ -310,7 +321,11 @@ fn main() -> Result<()> {
 
     // ---- dailies + rounds, archive and future -----------------------------
     let first = if a.archive { 1 } else { today_number };
-    let compass_last = if a.compass_days > 0 { today_number + a.compass_days } else { 0 };
+    let compass_last = if a.compass_days > 0 {
+        today_number + a.compass_days
+    } else {
+        0
+    };
     if compass_last >= first {
         fs::create_dir_all(a.out.join("compass"))?;
     }
@@ -353,8 +368,10 @@ fn main() -> Result<()> {
                 let levels =
                     wiki_parser::graph::near_goal_levels(g, goal, COMPASS_DEPTH, COMPASS_CAP);
                 let d = levels.len();
-                let l: Vec<_> =
-                    levels.into_iter().map(|lvl| json!(delta_encode(lvl))).collect();
+                let l: Vec<_> = levels
+                    .into_iter()
+                    .map(|lvl| json!(delta_encode(lvl)))
+                    .collect();
                 obj.insert(key, json!({"d": d, "l": l}));
             }
             compass_bytes +=

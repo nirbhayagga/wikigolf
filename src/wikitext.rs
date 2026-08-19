@@ -26,7 +26,11 @@ pub struct CleanOpts {
 
 impl Default for CleanOpts {
     fn default() -> Self {
-        CleanOpts { strip_templates: false, strip_refs: false, cut_citation_sections: true }
+        CleanOpts {
+            strip_templates: false,
+            strip_refs: false,
+            cut_citation_sections: true,
+        }
     }
 }
 
@@ -44,7 +48,11 @@ impl Cleaner {
             r"(?mi)^[ \t]*={2,}[ \t]*(references|external links|further reading|notes|bibliography|sources|citations|footnotes)[ \t]*={2,}[ \t]*$",
         )
         .expect("static regex");
-        Cleaner { a: String::new(), b: String::new(), sections }
+        Cleaner {
+            a: String::new(),
+            b: String::new(),
+            sections,
+        }
     }
 
     pub fn clean<'s>(&'s mut self, src: &'s str, opts: &CleanOpts) -> &'s str {
@@ -103,11 +111,15 @@ fn strip_element(src: &str, tag: &str, out: &mut String) {
     let mut i = 0;
 
     while i < b.len() {
-        let Some(start) = find_open_tag(b, i, tag) else { break };
+        let Some(start) = find_open_tag(b, i, tag) else {
+            break;
+        };
         out.push_str(&src[i..start]);
 
         // Find the end of the opening tag.
-        let Some(gt_rel) = memchr::memchr(b'>', &b[start..]) else { return };
+        let Some(gt_rel) = memchr::memchr(b'>', &b[start..]) else {
+            return;
+        };
         let gt = start + gt_rel;
         let self_closing = b[..gt].iter().rev().find(|c| !c.is_ascii_whitespace()) == Some(&b'/');
 
@@ -208,7 +220,9 @@ pub fn for_each_link(text: &str, mut f: impl FnMut(&str)) {
         let open = i + rel;
         let body_start = open + 2;
 
-        let Some(close_rel) = memmem::find(&b[body_start..], b"]]") else { return };
+        let Some(close_rel) = memmem::find(&b[body_start..], b"]]") else {
+            return;
+        };
         let close = body_start + close_rel;
 
         // If another `[[` opens before this one closes, the inner link is the
@@ -280,7 +294,11 @@ mod tests {
     #[test]
     fn refs_stripped_only_on_request() {
         let mut out = String::new();
-        strip_element("a <ref>see [[Book]]</ref> b <ref name=\"x\" /> c", "ref", &mut out);
+        strip_element(
+            "a <ref>see [[Book]]</ref> b <ref name=\"x\" /> c",
+            "ref",
+            &mut out,
+        );
         assert_eq!(out, "a  b  c");
     }
 
@@ -313,6 +331,9 @@ mod tests {
     fn templates_kept_by_default() {
         let mut c = Cleaner::new();
         let src = "{{Infobox country|capital=[[Paris]]}} Body [[France]]";
-        assert_eq!(links(c.clean(src, &CleanOpts::default())), vec!["Paris", "France"]);
+        assert_eq!(
+            links(c.clean(src, &CleanOpts::default())),
+            vec!["Paris", "France"]
+        );
     }
 }

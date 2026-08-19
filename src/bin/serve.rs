@@ -22,11 +22,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use wiki_parser::game::{course_seed, daily_seed, today_day, Difficulty, Game, Rng, COURSE_3, COURSE_9, DAILY_EPOCH_DAY};
+use wiki_parser::duel::{Duels, JoinError};
+use wiki_parser::game::{
+    course_seed, daily_seed, today_day, Difficulty, Game, Rng, COURSE_3, COURSE_9, DAILY_EPOCH_DAY,
+};
 use wiki_parser::graph::PathFinder;
 use wiki_parser::identity::Identity;
 use wiki_parser::ratelimit::RateLimiter;
-use wiki_parser::duel::{Duels, JoinError};
 use wiki_parser::runs::{Registry, RunSpec};
 
 #[derive(Parser, Debug)]
@@ -222,7 +224,11 @@ type Shared = Arc<App>;
 /// left-most entry is the original client.
 fn client_ip(app: &App, req: &Request, peer: IpAddr) -> IpAddr {
     if app.trust_proxy {
-        if let Some(fwd) = req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        if let Some(fwd) = req
+            .headers()
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+        {
             if let Some(first) = fwd.split(',').next() {
                 if let Ok(ip) = first.trim().parse::<IpAddr>() {
                     return ip;
@@ -286,7 +292,11 @@ async fn rate_limit(
             | "/api/compass"
             | "/api/routes"
     );
-    let ok = if heavy { app.rl_heavy.allow(ip) } else { app.rl_read.allow(ip) };
+    let ok = if heavy {
+        app.rl_heavy.allow(ip)
+    } else {
+        app.rl_read.allow(ip)
+    };
     if ok {
         // Count what was served, not what was throttled — the question these
         // counters answer is "how much real use is there".
@@ -370,10 +380,9 @@ fn article_ref_banned(g: &Game, id: u32, banned: bool) -> ArticleRef {
         views: g.views.get(id as usize).copied(),
         desc: g.descs.get(id).first().cloned(),
         kind: g.kinds.get(id).first().cloned(),
-        featured: g
-            .flags
-            .get(id as usize)
-            .is_some_and(|f| f & (wiki_parser::extras::FLAG_FEATURED | wiki_parser::extras::FLAG_GOOD) != 0),
+        featured: g.flags.get(id as usize).is_some_and(|f| {
+            f & (wiki_parser::extras::FLAG_FEATURED | wiki_parser::extras::FLAG_GOOD) != 0
+        }),
         disambig: g
             .flags
             .get(id as usize)
@@ -489,8 +498,6 @@ struct BoardRow {
     ms: u64,
 }
 
-/// Day 0 of the daily challenge: 2026-01-01 UTC, as a Unix day index.
-
 // Rate limits, per IP. Reads are generous because normal play issues one
 // article fetch per click. Heavy endpoints each cost a full-title scan or a
 // BFS, so they get a much smaller budget with a burst for ordinary bursts of
@@ -601,9 +608,8 @@ async fn regions(State(s): State<Shared>) -> impl IntoResponse {
 
 async fn meta(State(s): State<Shared>) -> Json<Meta> {
     let bounds = s.game.layout.as_ref().map(|l| {
-        let fold = |v: &Vec<f32>, init: f32, f: fn(f32, f32) -> f32| {
-            v.iter().fold(init, |a, &b| f(a, b))
-        };
+        let fold =
+            |v: &Vec<f32>, init: f32, f: fn(f32, f32) -> f32| v.iter().fold(init, |a, &b| f(a, b));
         [
             fold(&l.x, f32::MAX, f32::min),
             fold(&l.y, f32::MAX, f32::min),
@@ -663,9 +669,8 @@ async fn article(
             .map(|&v| {
                 // The goal itself is never banned, matching the pathfinder —
                 // otherwise a high-degree goal would be unreachable.
-                let blocked = ban.is_some_and(|limit| {
-                    Some(v) != goal && s.game.graph.reverse.degree(v) > limit
-                });
+                let blocked = ban
+                    .is_some_and(|limit| Some(v) != goal && s.game.graph.reverse.degree(v) > limit);
                 article_ref_banned(&s.game, v, blocked)
             })
             .collect();
@@ -701,7 +706,11 @@ async fn path(State(s): State<Shared>, Json(req): Json<PathRequest>) -> impl Int
                     clicks: p.len() - 1,
                     path: p.into_iter().map(|v| article_ref(g, v)).collect(),
                 },
-                None => PathResponse { found: false, clicks: 0, path: Vec::new() },
+                None => PathResponse {
+                    found: false,
+                    clicks: 0,
+                    path: Vec::new(),
+                },
             }
         })
     })
@@ -716,7 +725,10 @@ async fn puzzle(
     State(s): State<Shared>,
     Query(q): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let name = q.get("difficulty").cloned().unwrap_or_else(|| "easy".into());
+    let name = q
+        .get("difficulty")
+        .cloned()
+        .unwrap_or_else(|| "easy".into());
     let d = Difficulty::parse(&name);
 
     // Player-chosen endpoints. Both must be given; one alone is ambiguous
@@ -909,9 +921,7 @@ async fn route_count(
     let out = tokio::task::spawn_blocking(move || {
         let rev = &s.game.graph.reverse;
         let banned: Box<dyn Fn(u32) -> bool + '_> = match ban {
-            Some(limit) => {
-                Box::new(move |v: u32| v != start && v != goal && rev.degree(v) > limit)
-            }
+            Some(limit) => Box::new(move |v: u32| v != start && v != goal && rev.degree(v) > limit),
             None => Box::new(|_| false),
         };
         // +1 on the cap: par came from the same graph, so anything deeper is a
@@ -951,10 +961,7 @@ struct CompassRequest {
 /// This replaces the map-distance arrows, which were measured at a 1.18x lift
 /// over guessing. These numbers are the real graph distance, which is why they
 /// are rationed: shown for free on every article they would solve the game.
-async fn compass(
-    State(s): State<Shared>,
-    Json(req): Json<CompassRequest>,
-) -> impl IntoResponse {
+async fn compass(State(s): State<Shared>, Json(req): Json<CompassRequest>) -> impl IntoResponse {
     let (goal, ban, left) = match s.runs.spend_compass(req.run) {
         Ok(v) => v,
         Err(e) => return err(e.message(&s.game.graph)).into_response(),
@@ -963,14 +970,16 @@ async fn compass(
     let out = tokio::task::spawn_blocking(move || {
         let cached = {
             let cache = s.compass.lock().unwrap();
-            cache.iter().find(|(g, _)| *g == goal).map(|(_, d)| Arc::clone(d))
+            cache
+                .iter()
+                .find(|(g, _)| *g == goal)
+                .map(|(_, d)| Arc::clone(d))
         };
         let dist = match cached {
             Some(d) => d,
             None => {
-                let d = Arc::new(
-                    s.with_finder(|g, pf| pf.distances_to(&g.graph, goal, COMPASS_DEPTH)),
-                );
+                let d =
+                    Arc::new(s.with_finder(|g, pf| pf.distances_to(&g.graph, goal, COMPASS_DEPTH)));
                 let mut cache = s.compass.lock().unwrap();
                 if !cache.iter().any(|(g, _)| *g == goal) {
                     cache.push((goal, Arc::clone(&d)));
@@ -1021,7 +1030,10 @@ async fn leaderboard(
     // "hard", custom races "custom", the daily whatever it was asked for — so
     // a caller that omits this gets an empty list rather than a wrong one.
     // The page always sends its own race's values.
-    let difficulty = q.get("difficulty").cloned().unwrap_or_else(|| "medium".into());
+    let difficulty = q
+        .get("difficulty")
+        .cloned()
+        .unwrap_or_else(|| "medium".into());
     let rows: Vec<BoardRow> = s
         .runs
         .leaderboard(number, &difficulty)
@@ -1043,7 +1055,10 @@ async fn daily(
     State(s): State<Shared>,
     Query(q): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let name = q.get("difficulty").cloned().unwrap_or_else(|| "medium".into());
+    let name = q
+        .get("difficulty")
+        .cloned()
+        .unwrap_or_else(|| "medium".into());
     let d = Difficulty::parse(&name);
 
     let today_number = today_day().saturating_sub(DAILY_EPOCH_DAY) + 1;
@@ -1081,7 +1096,10 @@ async fn dist(
     let Some(number) = q.get("number").and_then(|v| v.parse::<u64>().ok()) else {
         return err("number is required").into_response();
     };
-    let difficulty = q.get("difficulty").cloned().unwrap_or_else(|| "medium".into());
+    let difficulty = q
+        .get("difficulty")
+        .cloned()
+        .unwrap_or_else(|| "medium".into());
     let entries = s.runs.leaderboard(Some(number), &difficulty);
     let mut hist: std::collections::BTreeMap<usize, usize> = Default::default();
     for e in &entries {
@@ -1191,12 +1209,7 @@ async fn duel_ws(
     ws.on_upgrade(move |socket| duel_session(s, code, name, socket))
 }
 
-async fn duel_session(
-    s: Shared,
-    code: String,
-    name: String,
-    socket: axum::extract::ws::WebSocket,
-) {
+async fn duel_session(s: Shared, code: String, name: String, socket: axum::extract::ws::WebSocket) {
     use axum::extract::ws::Message;
     use futures_util::{SinkExt, StreamExt};
     let duels = s.duels.as_ref().expect("routes only mounted when enabled");
@@ -1212,7 +1225,9 @@ async fn duel_session(
             let (mut sink, _) = socket.split();
             let _ = sink
                 .send(Message::Text(
-                    serde_json::json!({"type":"error","error":msg}).to_string().into(),
+                    serde_json::json!({"type":"error","error":msg})
+                        .to_string()
+                        .into(),
                 ))
                 .await;
             return;
@@ -1226,7 +1241,11 @@ async fn duel_session(
         "goal": article_ref(&s.game, terms.1),
         "par": terms.2,
     });
-    if sink.send(Message::Text(hello.to_string().into())).await.is_err() {
+    if sink
+        .send(Message::Text(hello.to_string().into()))
+        .await
+        .is_err()
+    {
         duels.leave(&code, &name);
         return;
     }
@@ -1320,7 +1339,11 @@ async fn landmarks(
     State(s): State<Shared>,
     Query(q): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let n = q.get("n").and_then(|v| v.parse().ok()).unwrap_or(40usize).min(300);
+    let n = q
+        .get("n")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40usize)
+        .min(300);
     let out = tokio::task::spawn_blocking(move || s.game.landmarks(n))
         .await
         .unwrap_or_default();
@@ -1368,7 +1391,11 @@ async fn serve() -> Result<()> {
         "   {} articles, {} edges, map: {} — {:.1}s",
         game.graph.len(),
         game.graph.forward.edges(),
-        if game.layout.is_some() { "yes" } else { "NO (run 01_graph_compute.py)" },
+        if game.layout.is_some() {
+            "yes"
+        } else {
+            "NO (run 01_graph_compute.py)"
+        },
         t.elapsed().as_secs_f64()
     );
 
@@ -1377,7 +1404,10 @@ async fn serve() -> Result<()> {
         std::fs::create_dir_all(&state_dir)
             .with_context(|| format!("creating state directory {}", state_dir.display()))?;
     }
-    eprintln!("state (leaderboard, cookie secret) in {}", state_dir.display());
+    eprintln!(
+        "state (leaderboard, cookie secret) in {}",
+        state_dir.display()
+    );
 
     let state = Arc::new(App {
         game,
@@ -1492,8 +1522,13 @@ async fn serve() -> Result<()> {
     eprintln!("\n  WikiGolf listening on http://{addr}");
     eprintln!(
         "  rate limits: {} reads/s, {} heavy/s per IP{}\n",
-        READ_PER_SEC, HEAVY_PER_SEC,
-        if args.trust_proxy { " (trusting X-Forwarded-For)" } else { "" }
+        READ_PER_SEC,
+        HEAVY_PER_SEC,
+        if args.trust_proxy {
+            " (trusting X-Forwarded-For)"
+        } else {
+            ""
+        }
     );
     axum::serve(
         listener,
@@ -1534,8 +1569,7 @@ mod analytics_tests {
         // Uniques are a running per-day count, so the same IP again still
         // yields one line (a hit happened) but no new unique.
         a.hit("/", ip(1));
-        let v: serde_json::Value =
-            serde_json::from_str(&a.flush_line().unwrap()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a.flush_line().unwrap()).unwrap();
         assert_eq!(v["uniques_today"], 3);
     }
 }
@@ -1617,7 +1651,10 @@ mod page_tests {
             if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
                 continue;
             }
-            assert!(ids.contains(&name), "$('{name}') has no matching id in the markup");
+            assert!(
+                ids.contains(&name),
+                "$('{name}') has no matching id in the markup"
+            );
         }
     }
 }

@@ -15,7 +15,9 @@ use wiki_parser::extras::extract;
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let dump = args.next().expect("usage: extras_torture <dump.bz2> [max_pages]");
+    let dump = args
+        .next()
+        .expect("usage: extras_torture <dump.bz2> [max_pages]");
     let max: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(u64::MAX);
 
     let mut child = Command::new("lbzip2")
@@ -33,7 +35,7 @@ fn main() -> anyhow::Result<()> {
         found.2 += (e.flags != 0) as u64;
         found.3 += e.coord.is_some() as u64;
         n += 1;
-        if n % 250_000 == 0 {
+        if n.is_multiple_of(250_000) {
             eprintln!("  {n} pages tortured…");
         }
         if n >= max {

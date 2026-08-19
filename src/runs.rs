@@ -93,11 +93,9 @@ impl RunError {
             RunError::WrongStart => "path does not begin at the start article".into(),
             RunError::WrongGoal => "path does not end at the goal article".into(),
             RunError::PathTooLong => format!("path longer than {MAX_PATH} steps"),
-            RunError::BrokenLink(a, b) => format!(
-                "{:?} does not link to {:?}",
-                g.title(*a),
-                g.title(*b)
-            ),
+            RunError::BrokenLink(a, b) => {
+                format!("{:?} does not link to {:?}", g.title(*a), g.title(*b))
+            }
             RunError::UsedBannedHub(v) => {
                 format!("{:?} is banned at this difficulty", g.title(*v))
             }
@@ -141,18 +139,20 @@ pub struct Registry {
 /// Rendering already escapes, so this is about storage hygiene: bounded
 /// length, no control characters, no leading/trailing whitespace games.
 pub fn clean_nickname(raw: &str) -> String {
-    let s: String = raw
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(20)
-        .collect();
+    let s: String = raw.chars().filter(|c| !c.is_control()).take(20).collect();
     let s = s.trim().to_string();
-    if s.is_empty() { "anonymous".into() } else { s }
+    if s.is_empty() {
+        "anonymous".into()
+    } else {
+        s
+    }
 }
 
 /// Insert into a board, keeping one entry per player and the best order.
 fn place(list: &mut Vec<Entry>, entry: Entry) {
-    if let Some(existing) = list.iter_mut().find(|e| !e.player.is_empty() && e.player == entry.player)
+    if let Some(existing) = list
+        .iter_mut()
+        .find(|e| !e.player.is_empty() && e.player == entry.player)
     {
         // Same player, so keep only their better run rather than letting them
         // stack the board with repeated attempts.
@@ -190,7 +190,10 @@ impl Registry {
                 }
             }
             drop(board);
-            eprintln!("   restored {n} leaderboard entries from {}", path.display());
+            eprintln!(
+                "   restored {n} leaderboard entries from {}",
+                path.display()
+            );
         }
         let f = std::fs::OpenOptions::new()
             .create(true)
@@ -204,7 +207,10 @@ impl Registry {
     fn append(&self, board: &str, entry: &Entry) {
         let mut guard = self.log.lock().unwrap();
         let Some(f) = guard.as_mut() else { return };
-        let rec = Record { board: board.to_string(), entry: entry.clone() };
+        let rec = Record {
+            board: board.to_string(),
+            entry: entry.clone(),
+        };
         if let Ok(mut line) = serde_json::to_string(&rec) {
             line.push('\n');
             // Losing a leaderboard row is not worth failing a request over.
@@ -353,7 +359,12 @@ impl Registry {
             .position(|e| e.clicks == clicks && e.ms == ms)
             .map(|i| i + 1);
 
-        Ok(Accepted { clicks, par, ms, rank })
+        Ok(Accepted {
+            clicks,
+            par,
+            ms,
+            rank,
+        })
     }
 
     pub fn leaderboard(&self, number: Option<u64>, difficulty: &str) -> Vec<Entry> {
@@ -403,15 +414,20 @@ mod tests {
     }
 
     fn e(player: &str, clicks: usize, ms: u64) -> Entry {
-        Entry { nickname: player.into(), clicks, ms, player: player.into() }
+        Entry {
+            nickname: player.into(),
+            clicks,
+            ms,
+            player: player.into(),
+        }
     }
 
     #[test]
     fn one_entry_per_player_keeping_their_best() {
         let mut list = Vec::new();
         place(&mut list, e("ann", 6, 9000));
-        place(&mut list, e("ann", 4, 9000));   // improvement
-        place(&mut list, e("ann", 9, 1000));   // worse on clicks
+        place(&mut list, e("ann", 4, 9000)); // improvement
+        place(&mut list, e("ann", 9, 1000)); // worse on clicks
         assert_eq!(list.len(), 1, "a player must not stack the board");
         assert_eq!(list[0].clicks, 4);
     }
@@ -433,8 +449,24 @@ mod tests {
     fn anonymous_entries_are_not_merged_together() {
         // An empty player id means "unknown", not "the same person".
         let mut list = Vec::new();
-        place(&mut list, Entry { nickname: "a".into(), clicks: 3, ms: 1, player: String::new() });
-        place(&mut list, Entry { nickname: "b".into(), clicks: 4, ms: 1, player: String::new() });
+        place(
+            &mut list,
+            Entry {
+                nickname: "a".into(),
+                clicks: 3,
+                ms: 1,
+                player: String::new(),
+            },
+        );
+        place(
+            &mut list,
+            Entry {
+                nickname: "b".into(),
+                clicks: 4,
+                ms: 1,
+                player: String::new(),
+            },
+        );
         assert_eq!(list.len(), 2);
     }
 

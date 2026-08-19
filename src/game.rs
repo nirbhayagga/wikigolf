@@ -196,7 +196,13 @@ impl SearchIndex {
         let mut alpha: Vec<u32> = (0..n).collect();
         alpha.sort_unstable_by(|&a, &b| slice(a).cmp(slice(b)));
 
-        SearchIndex { corpus, offsets, owner, by_degree, alpha }
+        SearchIndex {
+            corpus,
+            offsets,
+            owner,
+            by_degree,
+            alpha,
+        }
     }
 
     #[inline]
@@ -316,7 +322,10 @@ pub fn load_endpoint_deny(data_dir: &Path, graph: &Graph) -> std::collections::H
         }
     }
     if !deny.is_empty() {
-        eprintln!("  endpoint curation: {} articles denied as endpoints", deny.len());
+        eprintln!(
+            "  endpoint curation: {} articles denied as endpoints",
+            deny.len()
+        );
     }
     deny
 }
@@ -340,16 +349,18 @@ pub fn playable_pool(
     // A disambiguation page is a fork, not a destination — racing to one is
     // an anticlimax and racing from one is a lottery. Auto-excluded here so
     // both the server and the pools generator agree without a shared list.
-    let disambig =
-        |v: u32| flags.get(v as usize).is_some_and(|f| f & crate::extras::FLAG_DISAMBIG != 0);
+    let disambig = |v: u32| {
+        flags
+            .get(v as usize)
+            .is_some_and(|f| f & crate::extras::FLAG_DISAMBIG != 0)
+    };
     let mut ranked: Vec<u32> = (0..graph.len() as u32)
         .filter(|&v| graph.forward.degree(v) >= 10 && !deny.contains(&v) && !disambig(v))
         .collect();
     let keep = PLAYABLE_POOL.min(ranked.len().div_ceil(4));
     if keep > 0 && keep < ranked.len() {
-        ranked.select_nth_unstable_by_key(keep - 1, |&v| {
-            std::cmp::Reverse(graph.reverse.degree(v))
-        });
+        ranked
+            .select_nth_unstable_by_key(keep - 1, |&v| std::cmp::Reverse(graph.reverse.degree(v)));
         ranked.truncate(keep);
     }
     ranked
@@ -532,9 +543,7 @@ impl Game {
         let mut hubs: Vec<u32> = (0..graph.len() as u32).collect();
         let k = MAX_HUBS.min(hubs.len());
         if k < hubs.len() {
-            hubs.select_nth_unstable_by_key(k - 1, |&v| {
-                std::cmp::Reverse(graph.reverse.degree(v))
-            });
+            hubs.select_nth_unstable_by_key(k - 1, |&v| std::cmp::Reverse(graph.reverse.degree(v)));
             hubs.truncate(k);
         }
         hubs.sort_unstable_by_key(|&v| std::cmp::Reverse(graph.reverse.degree(v)));
@@ -549,9 +558,8 @@ impl Game {
         let mut map_order: Vec<u32> = (0..graph.len() as u32).collect();
         let m = MAP_POINTS.min(map_order.len());
         if m < map_order.len() {
-            map_order.select_nth_unstable_by_key(m - 1, |&v| {
-                std::cmp::Reverse(graph.reverse.degree(v))
-            });
+            map_order
+                .select_nth_unstable_by_key(m - 1, |&v| std::cmp::Reverse(graph.reverse.degree(v)));
             map_order.truncate(m);
         }
         map_order.shrink_to_fit();
@@ -559,21 +567,27 @@ impl Game {
         // Optional: only exists if 03_name_clusters.py has been run.
         let llm_names: std::collections::HashMap<i32, String> =
             std::fs::read_to_string(data_dir.join("community_labels.json"))
-            .ok()
-            .and_then(|t| serde_json::from_str::<std::collections::HashMap<String, String>>(&t).ok())
-            .map(|m| {
-                m.into_iter()
-                    .filter_map(|(k, v)| k.parse::<i32>().ok().map(|k| (k, v)))
-                    .collect()
-            })
-            .unwrap_or_default();
+                .ok()
+                .and_then(|t| {
+                    serde_json::from_str::<std::collections::HashMap<String, String>>(&t).ok()
+                })
+                .map(|m| {
+                    m.into_iter()
+                        .filter_map(|(k, v)| k.parse::<i32>().ok().map(|k| (k, v)))
+                        .collect()
+                })
+                .unwrap_or_default();
 
         // All three are optional: an older parse simply has none of them, and
         // every consumer degrades to showing nothing rather than failing.
         let categories = PerArticle::load(&data_dir.join("categories.parquet"), n_articles, 8)?;
         let aliases =
             PerArticle::load(&data_dir.join("redirects.parquet"), n_articles, MAX_ALIASES)?;
-        let sizes = read_u32_column(&data_dir.join("article_sizes.parquet"), n_articles, "article_sizes")?;
+        let sizes = read_u32_column(
+            &data_dir.join("article_sizes.parquet"),
+            n_articles,
+            "article_sizes",
+        )?;
         // What people actually read, not what editors link — from
         // 09_pageviews.py, and absent until it has run.
         let views = read_u32_column(&data_dir.join("pageviews.parquet"), n_articles, "pageviews")?;
@@ -600,16 +614,14 @@ impl Game {
                 graph.reverse.degree(v)
             })
         } else {
-            SearchIndex::build(&graph.titles, std::iter::empty, &|v| graph.reverse.degree(v))
+            SearchIndex::build(&graph.titles, std::iter::empty, &|v| {
+                graph.reverse.degree(v)
+            })
         };
 
         // Optional but never silently wrong: a missing pools file degrades to
         // rejection sampling, a stale one refuses to load (see pools.rs).
-        let pools = Pools::load(
-            &data_dir.join(POOL_FILE),
-            n_articles,
-            graph.forward.edges(),
-        )?;
+        let pools = Pools::load(&data_dir.join(POOL_FILE), n_articles, graph.forward.edges())?;
         if let Some(p) = &pools {
             eprintln!("  puzzle pools: {}", p.summary());
         }
@@ -644,11 +656,7 @@ impl Game {
     }
 
     /// Full-record pool draw for the static exporter.
-    pub fn pools_pick_full(
-        &self,
-        d: Difficulty,
-        rng: &mut Rng,
-    ) -> Option<(u32, u32, usize, u32)> {
+    pub fn pools_pick_full(&self, d: Difficulty, rng: &mut Rng) -> Option<(u32, u32, usize, u32)> {
         self.pools.as_ref()?.pick_full(d, rng)
     }
 
@@ -702,13 +710,20 @@ impl Game {
                 None => Box::new(|_| false),
             };
             for _ in 0..8 {
-                let Some((a, b)) = pools.pick(d, rng) else { break };
+                let Some((a, b)) = pools.pick(d, rng) else {
+                    break;
+                };
                 let Some(path) = pf.shortest_path(&self.graph, a, b, &banned) else {
                     continue;
                 };
                 let optimal = path.len() - 1;
                 if optimal >= min_len && optimal <= min_len + 3 {
-                    return Some(Puzzle { start: a, goal: b, ban_degree: ban, optimal });
+                    return Some(Puzzle {
+                        start: a,
+                        goal: b,
+                        ban_degree: ban,
+                        optimal,
+                    });
                 }
             }
         }
@@ -744,7 +759,12 @@ impl Game {
             let optimal = path.len() - 1;
             // Cap the upper end too: a 9-hop race is not hard, it is tedious.
             if optimal >= min_len && optimal <= min_len + 3 {
-                return Some(Puzzle { start: a, goal: b, ban_degree, optimal });
+                return Some(Puzzle {
+                    start: a,
+                    goal: b,
+                    ban_degree,
+                    optimal,
+                });
             }
         }
         None
@@ -770,7 +790,12 @@ impl Game {
                     continue;
                 };
                 if path.len() - 1 == target_par {
-                    return Some(Puzzle { start: a, goal: b, ban_degree: None, optimal: target_par });
+                    return Some(Puzzle {
+                        start: a,
+                        goal: b,
+                        ban_degree: None,
+                        optimal: target_par,
+                    });
                 }
             }
         }
@@ -824,7 +849,12 @@ impl Game {
             };
             let optimal = path.len() - 1;
             if optimal >= min_len && optimal <= min_len + 4 {
-                return Some(Puzzle { start: a, goal: b, ban_degree: ban, optimal });
+                return Some(Puzzle {
+                    start: a,
+                    goal: b,
+                    ban_degree: ban,
+                    optimal,
+                });
             }
         }
         None
@@ -857,7 +887,12 @@ impl Game {
             None => Box::new(|_| false),
         };
         let path = pf.shortest_path(&self.graph, a, b, &banned)?;
-        Some(Puzzle { start: a, goal: b, ban_degree, optimal: path.len() - 1 })
+        Some(Puzzle {
+            start: a,
+            goal: b,
+            ban_degree,
+            optimal: path.len() - 1,
+        })
     }
 
     /// Search over every article title and redirect alias, ranked by match
@@ -867,7 +902,12 @@ impl Game {
     /// index (see `SearchIndex`); the no-match worst case is still a linear
     /// pass, hence the caller keeps running it off the async runtime.
     pub fn search(&self, query: &str, limit: usize) -> Vec<u32> {
-        search_ranked(&self.search, &|v| self.graph.reverse.degree(v), query, limit)
+        search_ranked(
+            &self.search,
+            &|v| self.graph.reverse.degree(v),
+            query,
+            limit,
+        )
     }
 
     /// One label per community: its most linked-to article, placed at that
@@ -988,8 +1028,14 @@ mod tests {
     #[test]
     fn word_prefix_requires_a_word_boundary() {
         // "einst" is inside "weinstein" but does not start a word there.
-        assert_eq!(search_score("the weinstein company", "einst", 5), Some(5 + 1));
-        assert_eq!(search_score("albert einstein", "einst", 5), Some(30 * (5 + 1)));
+        assert_eq!(
+            search_score("the weinstein company", "einst", 5),
+            Some(5 + 1)
+        );
+        assert_eq!(
+            search_score("albert einstein", "einst", 5),
+            Some(30 * (5 + 1))
+        );
     }
 
     #[test]
@@ -1042,7 +1088,16 @@ mod tests {
         let degrees = vec![2_817usize, 93_701, 241, 1, 48, 141_719, 5, 900, 60, 300];
 
         let idx = SearchIndex::build(&titles, std::iter::empty, &|v| degrees[v as usize]);
-        for q in ["cat", "einst", "einstein", "franc", "e", "zzz-no-match", "  ", "CAT"] {
+        for q in [
+            "cat",
+            "einst",
+            "einstein",
+            "franc",
+            "e",
+            "zzz-no-match",
+            "  ",
+            "CAT",
+        ] {
             for limit in [1, 3, 10] {
                 assert_eq!(
                     search_ranked(&idx, &|v| degrees[v as usize], q, limit),
@@ -1087,16 +1142,15 @@ mod tests {
 
     #[test]
     fn aliases_find_their_article_and_dedup() {
-        let titles: Vec<String> =
-            ["New York City", "Nyctalus", "Albert Einstein"].iter().map(|s| s.to_string()).collect();
+        let titles: Vec<String> = ["New York City", "Nyctalus", "Albert Einstein"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let degrees = [50_000usize, 3, 241];
-        let aliases: Vec<(&str, u32)> =
-            vec![("NYC", 0), ("The Big Apple", 0), ("Einstein", 2)];
-        let idx = SearchIndex::build(
-            &titles,
-            || aliases.iter().copied(),
-            &|v| degrees[v as usize],
-        );
+        let aliases: Vec<(&str, u32)> = vec![("NYC", 0), ("The Big Apple", 0), ("Einstein", 2)];
+        let idx = SearchIndex::build(&titles, || aliases.iter().copied(), &|v| {
+            degrees[v as usize]
+        });
         let search = |q: &str, n: usize| search_ranked(&idx, &|v| degrees[v as usize], q, n);
 
         // An exact alias match outranks a title that merely starts with it.
@@ -1266,10 +1320,16 @@ fn vacuous_region_name(name: &str) -> bool {
     if lower.ends_with("(living people)") {
         return true;
     }
-    if ["of birth missing", "of death missing", "of birth unknown",
-        "of death unknown", "of birth uncertain", "of death uncertain"]
-        .iter()
-        .any(|p| lower.contains(p))
+    if [
+        "of birth missing",
+        "of death missing",
+        "of birth unknown",
+        "of death unknown",
+        "of birth uncertain",
+        "of death uncertain",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
     {
         return true;
     }
@@ -1277,7 +1337,11 @@ fn vacuous_region_name(name: &str) -> bool {
     // rolls. The digit check keeps real names like "Deaths in police
     // custody".
     if let Some(i) = lower.find("deaths in ") {
-        if lower[i + 10..].chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        if lower[i + 10..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit())
+        {
             return true;
         }
     }
@@ -1381,20 +1445,19 @@ fn derive_region_names(
         }
     }
 
-    let vacuous = vacuous_region_name;
-
     // Names must also be unique across regions: bigger regions pick first,
     // and a region whose favourite is taken falls to its next candidate —
     // the runner-up category is a better name than a duplicate of someone
     // else's.
-    let mut ranked: Vec<(i32, usize, Vec<(&str, u32)>)> = tally
+    type Ranked<'a> = (i32, usize, Vec<(&'a str, u32)>);
+    let mut ranked: Vec<Ranked> = tally
         .into_iter()
         .map(|(c, counts)| {
             let mut cands: Vec<(&str, u32)> = counts
                 .into_iter()
                 // A category shared by two articles is a coincidence, not a
                 // region's identity.
-                .filter(|&(name, n)| n >= 3 && !vacuous(name))
+                .filter(|&(name, n)| n >= 3 && !vacuous_region_name(name))
                 .collect();
             cands.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
             cands.truncate(12);
@@ -1447,7 +1510,11 @@ mod region_name_tests {
 
     fn flat_layout(communities: Vec<i32>) -> Option<Layout> {
         let n = communities.len();
-        Some(Layout { x: vec![0.0; n], y: vec![0.0; n], community: communities })
+        Some(Layout {
+            x: vec![0.0; n],
+            y: vec![0.0; n],
+            community: communities,
+        })
     }
 
     #[test]

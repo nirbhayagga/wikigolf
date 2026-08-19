@@ -22,7 +22,10 @@ use wiki_parser::graph::Graph;
 use wiki_parser::pools::{self, Pools, POOL_FILE};
 
 #[derive(Parser, Debug)]
-#[command(name = "pools", about = "Precompute wiki-race puzzle pools with route counts")]
+#[command(
+    name = "pools",
+    about = "Precompute wiki-race puzzle pools with route counts"
+)]
 struct Args {
     /// Directory holding titles.parquet / edges.parquet
     #[arg(short, long, default_value = "data")]
@@ -52,7 +55,9 @@ struct Args {
 fn main() -> Result<()> {
     let a = Args::parse();
     let threads = if a.threads == 0 {
-        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8)
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(8)
     } else {
         a.threads
     };
@@ -87,11 +92,17 @@ fn main() -> Result<()> {
         cand.sort_unstable_by_key(|&v| std::cmp::Reverse(rev.degree(v)));
         cand.truncate(a.sources);
 
-        eprintln!("{d:?}: {} endpoints, BFS pass on {threads} threads...", cand.len());
+        eprintln!(
+            "{d:?}: {} endpoints, BFS pass on {threads} threads...",
+            cand.len()
+        );
         let t = Instant::now();
         let buckets = pools::generate(&graph, &cand, min_len, ban, a.per_bucket, threads);
         let kept: usize = buckets.iter().map(|b| b.len()).sum();
-        eprintln!("  kept {kept} pairs in {:.1?}; counting routes...", t.elapsed());
+        eprintln!(
+            "  kept {kept} pairs in {:.1?}; counting routes...",
+            t.elapsed()
+        );
 
         let t = Instant::now();
         let all: Vec<(u32, u32)> = buckets.into_iter().flatten().collect();

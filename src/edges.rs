@@ -63,7 +63,10 @@ pub fn build<R: BufRead>(
     // Wikitext byte length per article, indexed by dense id. The dump hands it
     // over for free while the text is already in memory.
     let mut sizes = vec![0u32; idx.n_articles as usize];
-    let mut extras = ExtrasOut { flags: vec![0u32; idx.n_articles as usize], ..Default::default() };
+    let mut extras = ExtrasOut {
+        flags: vec![0u32; idx.n_articles as usize],
+        ..Default::default()
+    };
     let mut page_cats: Vec<String> = Vec::with_capacity(16);
     let mut cleaner = Cleaner::new();
     let mut targets: Vec<u32> = Vec::with_capacity(4096);
@@ -246,7 +249,10 @@ mod tests {
 
         use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
         let file = std::fs::File::open(&cpath).unwrap();
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file).unwrap().build().unwrap();
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .unwrap()
+            .build()
+            .unwrap();
         let mut cats = Vec::new();
         for batch in reader {
             let batch = batch.unwrap();
@@ -296,7 +302,10 @@ mod tests {
     fn read_back(path: &Path) -> Vec<(u32, u32)> {
         use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
         let file = std::fs::File::open(path).unwrap();
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file).unwrap().build().unwrap();
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .unwrap()
+            .build()
+            .unwrap();
         let mut out = Vec::new();
         for batch in reader {
             let batch = batch.unwrap();
@@ -369,14 +378,21 @@ mod tests {
     fn citation_section_links_are_cut() {
         // The only link in == References == is a duplicate, so the observable
         // effect is on the raw link count, not the edge set.
-        let with = run(CleanOpts { cut_citation_sections: false, ..Default::default() }).0;
+        let with = run(CleanOpts {
+            cut_citation_sections: false,
+            ..Default::default()
+        })
+        .0;
         let without = run(CleanOpts::default()).0;
         assert!(without.links_seen < with.links_seen);
     }
 
     #[test]
     fn stripping_templates_removes_infobox_links() {
-        let (_, idx, edges) = run(CleanOpts { strip_templates: true, ..Default::default() });
+        let (_, idx, edges) = run(CleanOpts {
+            strip_templates: true,
+            ..Default::default()
+        });
         let a = idx.lookup("Anarchism").unwrap();
         let st_ng = idx.lookup("Star Trek: The Next Generation").unwrap();
         assert!(!edges.contains(&(a, st_ng)));
