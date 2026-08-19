@@ -638,6 +638,9 @@ let META=null, MAP=null, LAND=null, TICK=null;
 // toward the other, so the view glides after each hop instead of snapping.
 let cam={x:0,y:0,s:1}, target={x:0,y:0,s:1}, dragging=null;
 
+// Declared before blank(): the state default below reads it.
+const STATIC = document.documentElement.hasAttribute('data-static');
+
 const blank = () => ({
   goal:null, cur:null, trail:[], steps:[], par:null, ban:null, run:null,
   done:false, started:null, elapsed:0, number:null, difficulty:'easy', share:'',
@@ -646,7 +649,10 @@ const blank = () => ({
   jumped:false,           // a search jump moved the start: the run can't be scored
   compass:0, dist:null,   // charges left, and id -> clicks-to-goal for this article
   best:null,              // the optimal route, drawn on the map once the race ends
-  group:true,
+  // Shards carry no region per link, so grouping on static would put every
+  // link under one "Unplaced" header. The checkbox is hidden there too —
+  // both must agree, because blank() runs on every new race.
+  group:!STATIC,
 });
 let state = blank();
 
@@ -688,8 +694,7 @@ const kindGlyph = k => {
    into a file-tree adapter instead of /api. What the files cannot answer
    (custom-pair par, the compass, live boards, "a shortest route") the
    static init hides, so nothing on screen ever promises what a file host
-   cannot deliver. */
-const STATIC = document.documentElement.hasAttribute('data-static');
+   cannot deliver. (STATIC itself is declared up by blank(), which needs it.) */
 const S_CACHE = new Map();     // path -> parsed json, shards LRU-capped
 let S_RUNS = new Map();        // fake run id -> {par, routes}
 let S_NEXTRUN = 1;
