@@ -255,3 +255,34 @@ headroom on a 6 GB box.
   cannot fail the build — it ships. Two tests in `bin/serve.rs` guard against
   that after a slice-based edit once silently deleted the whole custom-race
   picker.
+
+## The public mirror — refresh drill
+
+The public repo is this repository's history minus `RUNBOOK.html` (the private
+ops doc), rewritten with `git filter-repo`. Refresh it whenever public-relevant
+commits accumulate. **Never push to the public remote from this repo** — the
+histories diverged at the rewrite, only the drill below is safe:
+
+```bash
+cd ~/Downloads                     # the private repo's parent
+rm -rf wikigolf-new
+git clone --no-local wiki-graph wikigolf-new     # --no-local or filter-repo refuses
+cd wikigolf-new
+git filter-repo --invert-paths --path RUNBOOK.html
+git branch | grep -v main | xargs -r git branch -D   # stray branches ride along
+
+# Re-apply the mirror-notes commit (README "public mirror" note + CLAUDE.md
+# runbook wording). Easiest: cherry-pick it from the previous mirror while it
+# still exists; if it conflicts, redo the two small edits by hand.
+git remote add old ../wikigolf && git fetch old --quiet
+git cherry-pick $(git -C ../wikigolf log --format=%H --grep 'Public mirror: say what' -1)   || echo "cherry-pick conflicted: redo the README + CLAUDE.md edits manually"
+git remote remove old
+
+cd .. && rm -rf wikigolf && mv wikigolf-new wikigolf && cd wikigolf
+git remote add origin <the public wikigolf remote>
+git push --force -u origin main    # force is expected: every refresh rewrites
+```
+
+Verify before pushing: `git log --all --oneline -- RUNBOOK.html` prints
+nothing. The push fans out on its own: Forgejo mirrors to GitHub, GitHub
+Actions builds `ghcr.io/<user>/wikigolf` from the new main.
