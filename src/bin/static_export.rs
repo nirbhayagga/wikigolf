@@ -286,6 +286,9 @@ fn main() -> Result<()> {
         fs::create_dir_all(a.out.join("random"))?;
         let mut pool_goals: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
         let with_compass = a.compass_days > 0;
+        // Rows are held back until the compass pass has measured every
+        // goal's depth — the pool files carry it per race.
+        let mut pools_out: Vec<(String, Option<usize>, Vec<serde_json::Value>)> = Vec::new();
         for d in [Difficulty::Easy, Difficulty::Medium, Difficulty::Hard] {
             let mut rng = Rng::new(0x57A7_1C00 ^ d as u64);
             let ban = d.rules().0;
@@ -302,12 +305,12 @@ fn main() -> Result<()> {
                     }));
                 }
             }
-            write_json(
-                &a.out
-                    .join(format!("random/{}.json", format!("{d:?}").to_lowercase())),
-                &json!({"ban_degree": ban, "compass": with_compass, "races": rows}),
-            )?;
+            pools_out.push((format!("{d:?}").to_lowercase(), ban, rows));
         }
+        // Per-goal compass files, remembering each goal's depth so the pool
+        // rows can carry it ("cd"): the client offers no charges below depth
+        // 2, because a compass that can only say ">1" is worse than none.
+        let mut depth_of = std::collections::BTreeMap::<u32, usize>::new();
         if with_compass {
             fs::create_dir_all(a.out.join("compass"))?;
             let mut bytes = 0u64;
@@ -315,6 +318,7 @@ fn main() -> Result<()> {
             for goal in pool_goals {
                 let levels = goal_levels(g, goal);
                 let d = levels.len();
+                depth_of.insert(goal, d);
                 let l: Vec<_> = levels
                     .into_iter()
                     .map(|lvl| json!(delta_encode(lvl)))
@@ -325,12 +329,23 @@ fn main() -> Result<()> {
                 )?;
             }
             eprintln!(
-                "  random race files written; {n_goals} pool-goal compass files, {:.2} GB raw",
+                "  {n_goals} pool-goal compass files, {:.2} GB raw",
                 bytes as f64 / 1e9
             );
-        } else {
-            eprintln!("  random race files written (no compass: --compass-days 0)");
         }
+        for (name, ban, mut rows) in pools_out {
+            for r in rows.iter_mut() {
+                let gid = r["goal"]["id"].as_u64().expect("goal id") as u32;
+                if let Some(&d) = depth_of.get(&gid) {
+                    r["cd"] = json!(d);
+                }
+            }
+            write_json(
+                &a.out.join(format!("random/{name}.json")),
+                &json!({"ban_degree": ban, "compass": with_compass, "races": rows}),
+            )?;
+        }
+        eprintln!("  random race files written");
     }
 
     // ---- dailies + rounds, archive and future -----------------------------
@@ -367,6 +382,33 @@ fn main() -> Result<()> {
             }
         }
         let round_par: u64 = holes.iter().filter_map(|h| h["par"].as_u64()).sum();
+        if number <= compass_last {
+            // Compass before the daily file: each puzzle carries its compass
+            // depth ("cd"), and the client offers no charges below depth 2 —
+            // a compass that can only say ">1" is worse than none.
+            let mut obj = serde_json::Map::new();
+            for (key, goal) in &goals {
+                let levels = goal_levels(g, *goal);
+                let d = levels.len();
+                let l: Vec<_> = levels
+                    .into_iter()
+                    .map(|lvl| json!(delta_encode(lvl)))
+                    .collect();
+                if let Some(v) = difficulties.get_mut(key.as_str()) {
+                    v["cd"] = json!(d);
+                } else if let Some(i) =
+                    key.strip_prefix('h').and_then(|s| s.parse::<usize>().ok())
+                {
+                    if let Some(h) = holes.get_mut(i - 1) {
+                        h["cd"] = json!(d);
+                    }
+                }
+                obj.insert(key.clone(), json!({"d": d, "l": l}));
+            }
+            compass_bytes +=
+                write_json(&a.out.join(format!("compass/{number}.json")), &json!(obj))?;
+            n_compass += 1;
+        }
         write_json(
             &a.out.join(format!("daily/{number}.json")),
             &json!({
@@ -376,21 +418,6 @@ fn main() -> Result<()> {
             }),
         )?;
         n_daily += 1;
-        if number <= compass_last {
-            let mut obj = serde_json::Map::new();
-            for (key, goal) in goals {
-                let levels = goal_levels(g, goal);
-                let d = levels.len();
-                let l: Vec<_> = levels
-                    .into_iter()
-                    .map(|lvl| json!(delta_encode(lvl)))
-                    .collect();
-                obj.insert(key, json!({"d": d, "l": l}));
-            }
-            compass_bytes +=
-                write_json(&a.out.join(format!("compass/{number}.json")), &json!(obj))?;
-            n_compass += 1;
-        }
     }
     eprintln!(
         "  {n_daily} daily files (archive from #{first}, {} days ahead)",
