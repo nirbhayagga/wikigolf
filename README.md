@@ -3,7 +3,10 @@
 Parse, compute, and visualize the English Wikipedia link network — a Rust two-pass
 parser that resolves article identity, then a Python pipeline that computes
 PageRank, communities and a force-directed layout, plus a Rust game server that
-plays wiki-race on the same graph.
+plays wiki-race on the same graph. Live as **[wikigolf.app](https://wikigolf.app)**.
+
+This is the public mirror of the working repository: identical code and history,
+minus the private operational runbook (deploy targets, incident log).
 
 Everything runs on CPU. There is no working GPU path — see
 [Layout](#layout-is-cpu-sfdp) for why.

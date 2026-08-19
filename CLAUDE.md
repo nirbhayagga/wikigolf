@@ -8,7 +8,7 @@ A pipeline that turns the English Wikipedia XML dump into an interactive force-d
 
 This is a **content project** — a public explorable map, quotable statistics, and a poster-grade render — so numbers stated publicly have to survive being checked. That is why the parser is strict about what counts as an article.
 
-`CODEBASE.md` is the per-file reference: every Rust module and Python script, every data file with its real size, the endpoint surface, and the measurements. It is tracked, unlike the generated audit it replaced. `RUNBOOK.html` (also tracked) is the operational side: deploy procedures, machine split, the canonical data manifest, and what went wrong before. Keep all three in step when behavior changes — and keep RUNBOOK.html a local file, never published as an artifact.
+`CODEBASE.md` is the per-file reference: every Rust module and Python script, every data file with its real size, the endpoint surface, and the measurements. It is tracked, unlike the generated audit it replaced. The operational runbook (deploy procedures, machine split, incident history) is maintained privately outside this repo. Keep the docs in step when behavior changes.
 
 ## Commands
 
