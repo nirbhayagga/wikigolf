@@ -199,8 +199,14 @@ impl Graph {
         })?;
 
         Ok(Graph {
-            forward: Csr { offsets: out_counts, targets: fwd_targets },
-            reverse: Csr { offsets: in_counts, targets: rev_targets },
+            forward: Csr {
+                offsets: out_counts,
+                targets: fwd_targets,
+            },
+            reverse: Csr {
+                offsets: in_counts,
+                targets: rev_targets,
+            },
             titles,
             lookup,
             n_redirect_aliases,
@@ -459,7 +465,15 @@ impl PathFinder {
             self.sigma = vec![0; n];
             self.sigma_b = vec![0; n];
         }
-        let PathFinder { dist_f, dist_b, touched_f, touched_b, sigma, sigma_b, .. } = self;
+        let PathFinder {
+            dist_f,
+            dist_b,
+            touched_f,
+            touched_b,
+            sigma,
+            sigma_b,
+            ..
+        } = self;
 
         sigma[start as usize] = 1;
         dist_f[start as usize] = 0;
@@ -472,10 +486,7 @@ impl PathFinder {
         let mut frontier_b = vec![goal];
         let (mut depth_f, mut depth_b) = (0u8, 0u8);
 
-        while !frontier_f.is_empty()
-            && !frontier_b.is_empty()
-            && depth_f + depth_b < max_depth
-        {
+        while !frontier_f.is_empty() && !frontier_b.is_empty() && depth_f + depth_b < max_depth {
             // Expand whichever side is cheaper, exactly like shortest_path —
             // on a hubby graph the frontiers grow at wildly different rates.
             let forward = frontier_f.len() <= frontier_b.len();
@@ -526,8 +537,7 @@ impl PathFinder {
             // level: the position-`depth` vertex of every shortest path sits
             // in `next` (its depth on this side is exact), with the other
             // side's level at L-depth already complete.
-            let (own_depth, other_dist, own_sigma, other_sigma): (u8, &Vec<u8>, _, _) = if forward
-            {
+            let (own_depth, other_dist, own_sigma, other_sigma): (u8, &Vec<u8>, _, _) = if forward {
                 (depth_f, &*dist_b, &*sigma, &*sigma_b)
             } else {
                 (depth_b, &*dist_f, &*sigma_b, &*sigma)
@@ -550,8 +560,9 @@ impl PathFinder {
                 let want = total - own_depth;
                 for &v in &next {
                     if other_dist[v as usize] == want {
-                        count = count
-                            .saturating_add(own_sigma[v as usize].saturating_mul(other_sigma[v as usize]));
+                        count = count.saturating_add(
+                            own_sigma[v as usize].saturating_mul(other_sigma[v as usize]),
+                        );
                     }
                 }
                 return Some((total as usize, count));
@@ -669,8 +680,14 @@ pub(crate) mod tests_support {
             lookup.insert(t.clone().into_boxed_str(), i as u32);
         }
         Graph {
-            forward: Csr { offsets: out_counts, targets: fwd },
-            reverse: Csr { offsets: in_counts, targets: rev },
+            forward: Csr {
+                offsets: out_counts,
+                targets: fwd,
+            },
+            reverse: Csr {
+                offsets: in_counts,
+                targets: rev,
+            },
             titles,
             lookup,
             n_redirect_aliases: 0,
@@ -806,7 +823,9 @@ mod counting_tests {
     fn near_goal_levels_match_the_full_distance_map() {
         let mut seed = 0x0FED_CBA9_8765_4321u64;
         let mut rand = move || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (seed >> 33) as u32
         };
         for trial in 0..40 {
@@ -823,15 +842,24 @@ mod counting_tests {
                 for cap in [2usize, 10, 100_000] {
                     let levels = near_goal_levels(&g, goal, 6, cap);
                     for (i, lvl) in levels.iter().enumerate() {
-                        let want: Vec<u32> =
-                            (0..n).filter(|&v| dist[v as usize] == (i + 1) as u8).collect();
+                        let want: Vec<u32> = (0..n)
+                            .filter(|&v| dist[v as usize] == (i + 1) as u8)
+                            .collect();
                         let mut got = lvl.clone();
                         got.sort_unstable();
-                        assert_eq!(got, want, "trial {trial} goal {goal} cap {cap} level {}", i + 1);
+                        assert_eq!(
+                            got,
+                            want,
+                            "trial {trial} goal {goal} cap {cap} level {}",
+                            i + 1
+                        );
                     }
                     let total: usize = levels.iter().map(|l| l.len()).sum();
                     let l1 = levels.first().map_or(0, |l| l.len());
-                    assert!(total <= cap.max(l1), "trial {trial} goal {goal} cap {cap} total {total}");
+                    assert!(
+                        total <= cap.max(l1),
+                        "trial {trial} goal {goal} cap {cap} total {total}"
+                    );
                 }
             }
         }
@@ -844,7 +872,9 @@ mod counting_tests {
     fn bidirectional_count_matches_the_oracle() {
         let mut seed = 0x0123_4567_89AB_CDEFu64;
         let mut rand = move || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (seed >> 33) as u32
         };
         for trial in 0..40 {
@@ -892,7 +922,16 @@ mod counting_tests {
         // second is 4 distinct shortest routes of length 4.
         let g = graph(
             7,
-            &[(0, 1), (0, 2), (1, 3), (2, 3), (3, 4), (3, 5), (4, 6), (5, 6)],
+            &[
+                (0, 1),
+                (0, 2),
+                (1, 3),
+                (2, 3),
+                (3, 4),
+                (3, 5),
+                (4, 6),
+                (5, 6),
+            ],
         );
         assert_eq!(count(&g, 0, 6), Some((4, 4)));
     }
@@ -925,7 +964,10 @@ mod counting_tests {
         let g = graph(5, &[(0, 1), (1, 2), (2, 3), (3, 4)]);
         let mut pf = PathFinder::new(g.len());
         assert_eq!(pf.count_shortest_paths(&g, 0, 4, &|_| false, 2), None);
-        assert_eq!(pf.count_shortest_paths(&g, 0, 4, &|_| false, 4), Some((4, 1)));
+        assert_eq!(
+            pf.count_shortest_paths(&g, 0, 4, &|_| false, 4),
+            Some((4, 1))
+        );
     }
 
     #[test]
@@ -944,6 +986,9 @@ mod counting_tests {
         let g = graph(4, &[(0, 1), (1, 2), (2, 3)]);
         let d = PathFinder::new(g.len()).distances_to(&g, 3, 1);
         assert_eq!(d[2], 1);
-        assert_eq!(d[1], UNSEEN, "past the cap is indistinguishable from absent");
+        assert_eq!(
+            d[1], UNSEEN,
+            "past the cap is indistinguishable from absent"
+        );
     }
 }

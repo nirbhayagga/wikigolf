@@ -129,7 +129,8 @@ fn first_arg(body: &str) -> Option<&str> {
 fn parse_coord(body: &str) -> Option<(f32, f32, bool)> {
     let end = body.find("}}").unwrap_or(body.len());
     let body = &body[..end];
-    let is_title = body.contains("display=title") || body.contains("display=t|")
+    let is_title = body.contains("display=title")
+        || body.contains("display=t|")
         || body.ends_with("display=t");
 
     let mut nums: Vec<f64> = Vec::with_capacity(8);
@@ -199,20 +200,41 @@ mod tests {
 
     #[test]
     fn short_description_and_none() {
-        let e = extract("{{Short description|German-born theoretical physicist}}\ntext", "A");
-        assert_eq!(e.description.as_deref(), Some("German-born theoretical physicist"));
+        let e = extract(
+            "{{Short description|German-born theoretical physicist}}\ntext",
+            "A",
+        );
+        assert_eq!(
+            e.description.as_deref(),
+            Some("German-born theoretical physicist")
+        );
         assert_eq!(extract("{{short description|none}}", "A").description, None);
         // First one wins; later ones are noise.
-        let e = extract("{{Short description|First}} {{Short description|Second}}", "A");
+        let e = extract(
+            "{{Short description|First}} {{Short description|Second}}",
+            "A",
+        );
         assert_eq!(e.description.as_deref(), Some("First"));
     }
 
     #[test]
     fn disambiguation_by_template_suffix_and_title() {
-        assert_eq!(extract("{{Disambiguation}}", "Mercury").flags, FLAG_DISAMBIG);
-        assert_eq!(extract("{{hndis|name=Smith, John}}", "John Smith").flags, FLAG_DISAMBIG);
-        assert_eq!(extract("{{Airport disambiguation}}", "X").flags, FLAG_DISAMBIG);
-        assert_eq!(extract("body only", "Mercury (disambiguation)").flags, FLAG_DISAMBIG);
+        assert_eq!(
+            extract("{{Disambiguation}}", "Mercury").flags,
+            FLAG_DISAMBIG
+        );
+        assert_eq!(
+            extract("{{hndis|name=Smith, John}}", "John Smith").flags,
+            FLAG_DISAMBIG
+        );
+        assert_eq!(
+            extract("{{Airport disambiguation}}", "X").flags,
+            FLAG_DISAMBIG
+        );
+        assert_eq!(
+            extract("body only", "Mercury (disambiguation)").flags,
+            FLAG_DISAMBIG
+        );
         assert_eq!(extract("{{Infobox person}}", "Jane Doe").flags, 0);
     }
 
@@ -220,7 +242,11 @@ mod tests {
     fn infobox_kind_takes_the_first() {
         let e = extract("{{Infobox film\n|name=X}} {{Infobox person}}", "X");
         assert_eq!(e.kind.as_deref(), Some("film"));
-        assert_eq!(extract("{{infobox}}", "X").kind, None, "bare infobox has no kind");
+        assert_eq!(
+            extract("{{infobox}}", "X").kind,
+            None,
+            "bare infobox has no kind"
+        );
     }
 
     #[test]
@@ -248,10 +274,7 @@ mod tests {
         );
         assert_eq!(e.coord, Some((30.0, 40.0)));
         // ...but an incidental one never replaces the title coord.
-        let e = extract(
-            "{{coord|30|40|display=title}} later {{coord|10|20}}",
-            "X",
-        );
+        let e = extract("{{coord|30|40|display=title}} later {{coord|10|20}}", "X");
         assert_eq!(e.coord, Some((30.0, 40.0)));
 
         // Out-of-range coordinates are lies, not data.

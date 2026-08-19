@@ -10,14 +10,14 @@
 pub mod duel;
 pub mod dump;
 pub mod edges;
-pub mod game;
 pub mod extras;
+pub mod game;
 pub mod graph;
 pub mod identity;
-pub mod ratelimit;
-pub mod runs;
 pub mod index;
 pub mod output;
 pub mod pools;
+pub mod ratelimit;
+pub mod runs;
 pub mod titles;
 pub mod wikitext;

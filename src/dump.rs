@@ -135,7 +135,10 @@ where
                 }
                 b"redirect" if in_page => {
                     if let Some(a) = e.try_get_attribute("title")? {
-                        page.redirect = Some(a.normalized_value(quick_xml::XmlVersion::Explicit1_0)?.into_owned());
+                        page.redirect = Some(
+                            a.normalized_value(quick_xml::XmlVersion::Explicit1_0)?
+                                .into_owned(),
+                        );
                     }
                 }
                 _ => {}
@@ -145,7 +148,10 @@ where
             Ok(Event::Empty(e)) => match e.local_name().as_ref() {
                 b"redirect" if in_page => {
                     if let Some(a) = e.try_get_attribute("title")? {
-                        page.redirect = Some(a.normalized_value(quick_xml::XmlVersion::Explicit1_0)?.into_owned());
+                        page.redirect = Some(
+                            a.normalized_value(quick_xml::XmlVersion::Explicit1_0)?
+                                .into_owned(),
+                        );
                     }
                 }
                 b"text" if in_revision => {} // <text bytes="0" />: no content
@@ -230,7 +236,11 @@ pub struct Progress {
 
 impl Progress {
     pub fn new(label: &'static str) -> Self {
-        Progress { label, start: std::time::Instant::now(), every: 100_000 }
+        Progress {
+            label,
+            start: std::time::Instant::now(),
+            every: 100_000,
+        }
     }
 
     pub fn tick(&self, n: u64) {
@@ -243,7 +253,10 @@ impl Progress {
 
     pub fn done(&self, n: u64) {
         let secs = self.start.elapsed().as_secs_f64();
-        eprintln!("\r   {} {:>10} pages  in {:.1}s        ", self.label, n, secs);
+        eprintln!(
+            "\r   {} {:>10} pages  in {:.1}s        ",
+            self.label, n, secs
+        );
     }
 }
 

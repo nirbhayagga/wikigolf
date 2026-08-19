@@ -45,12 +45,13 @@ impl RateLimiter {
             let rate = self.per_sec;
             // A bucket that has had time to refill completely carries no
             // information, so dropping it is free.
-            map.retain(|_, b| {
-                b.tokens + now.duration_since(b.last).as_secs_f64() * rate < cap
-            });
+            map.retain(|_, b| b.tokens + now.duration_since(b.last).as_secs_f64() * rate < cap);
         }
 
-        let b = map.entry(ip).or_insert(Bucket { tokens: self.capacity, last: now });
+        let b = map.entry(ip).or_insert(Bucket {
+            tokens: self.capacity,
+            last: now,
+        });
         let refill = now.duration_since(b.last).as_secs_f64() * self.per_sec;
         b.tokens = (b.tokens + refill).min(self.capacity);
         b.last = now;

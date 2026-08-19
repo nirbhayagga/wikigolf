@@ -130,20 +130,43 @@ impl NsPrefixes {
 /// "Articles with dead external links".
 pub fn is_maintenance_category(name: &str) -> bool {
     const PREFIXES: &[&str] = &[
-        "Articles ", "All articles", "Wikipedia ", "CS1 ", "Webarchive",
-        "Pages ", "All pages", "Use dmy dates", "Use mdy dates",
-        "Short description", "Commons category", "Coordinates ",
-        "Official website", "Good articles", "Featured articles",
-        "Redirects ", "All redirects", "Template ", "Interlanguage ",
-        "Harv and Sfn", "AC with ", "Vague or ambiguous",
+        "Articles ",
+        "All articles",
+        "Wikipedia ",
+        "CS1 ",
+        "Webarchive",
+        "Pages ",
+        "All pages",
+        "Use dmy dates",
+        "Use mdy dates",
+        "Short description",
+        "Commons category",
+        "Coordinates ",
+        "Official website",
+        "Good articles",
+        "Featured articles",
+        "Redirects ",
+        "All redirects",
+        "Template ",
+        "Interlanguage ",
+        "Harv and Sfn",
+        "AC with ",
+        "Vague or ambiguous",
     ];
     const CONTAINS: &[&str] = &[
-        "maint:", "errors", "stub", "with unsourced", "needing", "lacking",
-        "from ", "dead external links", "unreferenced", "cleanup",
+        "maint:",
+        "errors",
+        "stub",
+        "with unsourced",
+        "needing",
+        "lacking",
+        "from ",
+        "dead external links",
+        "unreferenced",
+        "cleanup",
     ];
     let lower = name.to_lowercase();
-    PREFIXES.iter().any(|p| name.starts_with(p))
-        || CONTAINS.iter().any(|c| lower.contains(c))
+    PREFIXES.iter().any(|p| name.starts_with(p)) || CONTAINS.iter().any(|c| lower.contains(c))
 }
 
 #[cfg(test)]

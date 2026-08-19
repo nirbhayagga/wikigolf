@@ -67,14 +67,24 @@ impl Duels {
                 s ^= s >> 12;
                 s ^= s << 25;
                 s ^= s >> 27;
-                code.push(ALPHABET[(s.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 59) as usize
-                    % ALPHABET.len()] as char);
+                code.push(
+                    ALPHABET
+                        [(s.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 59) as usize % ALPHABET.len()]
+                        as char,
+                );
             }
             if !rooms.contains_key(&code) {
                 let (tx, _) = broadcast::channel(64);
                 rooms.insert(
                     code.clone(),
-                    Room { start, goal, par, created: Instant::now(), tx, players: Vec::new() },
+                    Room {
+                        start,
+                        goal,
+                        par,
+                        created: Instant::now(),
+                        tx,
+                        players: Vec::new(),
+                    },
                 );
                 return Some(code);
             }
@@ -89,8 +99,14 @@ impl Duels {
         &self,
         code: &str,
         name: &str,
-    ) -> Result<((u32, u32, usize), broadcast::Sender<String>, broadcast::Receiver<String>), JoinError>
-    {
+    ) -> Result<
+        (
+            (u32, u32, usize),
+            broadcast::Sender<String>,
+            broadcast::Receiver<String>,
+        ),
+        JoinError,
+    > {
         let mut rooms = self.rooms.lock().unwrap();
         let room = rooms.get_mut(code).ok_or(JoinError::NoSuchRoom)?;
         if room.players.len() >= MAX_PLAYERS {
@@ -103,13 +119,19 @@ impl Duels {
         let _ = room.tx.send(
             serde_json::json!({"type":"joined","name":name,"players":room.players}).to_string(),
         );
-        Ok(((room.start, room.goal, room.par), room.tx.clone(), room.tx.subscribe()))
+        Ok((
+            (room.start, room.goal, room.par),
+            room.tx.clone(),
+            room.tx.subscribe(),
+        ))
     }
 
     /// Leave announces, then reaps the room if it emptied.
     pub fn leave(&self, code: &str, name: &str) {
         let mut rooms = self.rooms.lock().unwrap();
-        let Some(room) = rooms.get_mut(code) else { return };
+        let Some(room) = rooms.get_mut(code) else {
+            return;
+        };
         room.players.retain(|p| p != name);
         let _ = room.tx.send(
             serde_json::json!({"type":"left","name":name,"players":room.players}).to_string(),
@@ -146,7 +168,8 @@ mod tests {
         // A relayed click reaches the other player. Bob subscribed after
         // his own announcement went out, so the click is his first frame —
         // nobody hears their own arrival, by construction.
-        tx.send(r#"{"type":"click","name":"alice","at":"Cat"}"#.into()).unwrap();
+        tx.send(r#"{"type":"click","name":"alice","at":"Cat"}"#.into())
+            .unwrap();
         assert!(rx_b.try_recv().unwrap().contains("Cat"));
 
         assert!(matches!(d.join(&code, "alice"), Err(JoinError::NameTaken)));

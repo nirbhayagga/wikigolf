@@ -23,7 +23,11 @@ static GLOBAL: MiMalloc = MiMalloc;
 const READ_BUF: usize = 8 << 20;
 
 #[derive(Parser, Debug)]
-#[command(name = "wiki-parser", version, about = "Wikipedia XML dump -> integer link graph")]
+#[command(
+    name = "wiki-parser",
+    version,
+    about = "Wikipedia XML dump -> integer link graph"
+)]
 struct Args {
     /// Path to *-pages-articles*.xml.bz2 (or an already-decompressed .xml)
     dump: PathBuf,
@@ -101,7 +105,10 @@ fn open(path: &Path, decompressor: &str) -> Result<(Box<dyn BufRead>, Option<Chi
             .spawn()
             .with_context(|| format!("failed to spawn {decompressor}"))?;
         let out = child.stdout.take().expect("stdout was piped");
-        Ok((Box::new(BufReader::with_capacity(READ_BUF, out)), Some(child)))
+        Ok((
+            Box::new(BufReader::with_capacity(READ_BUF, out)),
+            Some(child),
+        ))
     } else {
         let f = File::open(path)?;
         Ok((Box::new(BufReader::with_capacity(READ_BUF, f)), None))
@@ -139,7 +146,11 @@ fn main() -> Result<()> {
             .unwrap_or(0);
         format!("{:02}:{:02}:{:02} UTC", s / 3600 % 24, s / 60 % 60, s % 60)
     };
-    eprintln!("wiki-parser {}   started {}", env!("CARGO_PKG_VERSION"), wall());
+    eprintln!(
+        "wiki-parser {}   started {}",
+        env!("CARGO_PKG_VERSION"),
+        wall()
+    );
     {
         let default_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
@@ -155,9 +166,17 @@ fn main() -> Result<()> {
     eprintln!("   out:       {}", args.out.display());
     eprintln!(
         "   links:     templates {}, refs {}, citation sections {}",
-        if opts.strip_templates { "stripped" } else { "kept" },
+        if opts.strip_templates {
+            "stripped"
+        } else {
+            "kept"
+        },
         if opts.strip_refs { "stripped" } else { "kept" },
-        if opts.cut_citation_sections { "cut" } else { "kept" },
+        if opts.cut_citation_sections {
+            "cut"
+        } else {
+            "kept"
+        },
     );
 
     // ---- Pass 1: article identity -----------------------------------------
@@ -212,7 +231,10 @@ fn main() -> Result<()> {
     eprintln!("   → {} ({} rows)", redirects_path.display(), n);
 
     if args.titles_only {
-        eprintln!("\nStopped after pass 1 (--titles-only). {:.1}s", started.elapsed().as_secs_f64());
+        eprintln!(
+            "\nStopped after pass 1 (--titles-only). {:.1}s",
+            started.elapsed().as_secs_f64()
+        );
         return Ok(());
     }
 
@@ -243,7 +265,10 @@ fn main() -> Result<()> {
     );
     eprintln!("   dropped: self links {:>12}", p2.self_links);
     if p2.duplicate_pages > 0 {
-        eprintln!("   ⚠ duplicate source pages skipped: {}", p2.duplicate_pages);
+        eprintln!(
+            "   ⚠ duplicate source pages skipped: {}",
+            p2.duplicate_pages
+        );
     }
     eprintln!("   → {} ({} edges)", edges_path.display(), p2.edges_written);
 
@@ -254,7 +279,11 @@ fn main() -> Result<()> {
         "   categories kept:    {:>12}  (dropped {} maintenance)",
         p2.categories_written, p2.categories_skipped_maintenance
     );
-    eprintln!("   → {} ({} rows)", cats_path.display(), p2.categories_written);
+    eprintln!(
+        "   → {} ({} rows)",
+        cats_path.display(),
+        p2.categories_written
+    );
 
     let sizes_path = args.out.join("article_sizes.parquet");
     let n_sizes = output::write_sizes(&sizes_path, &sizes)?;
@@ -282,7 +311,12 @@ fn main() -> Result<()> {
             "description",
             extras.descs.iter().map(|(i, d)| (*i, d.as_str())),
         )?;
-        eprintln!("   → {} ({} rows, {:.1}% of articles)", p.display(), n, pct(n, n_articles));
+        eprintln!(
+            "   → {} ({} rows, {:.1}% of articles)",
+            p.display(),
+            n,
+            pct(n, n_articles)
+        );
 
         let p = args.out.join("infobox_types.parquet");
         let n = output::write_titles(
@@ -291,7 +325,12 @@ fn main() -> Result<()> {
             "kind",
             extras.kinds.iter().map(|(i, k)| (*i, k.as_str())),
         )?;
-        eprintln!("   → {} ({} rows, {:.1}% of articles)", p.display(), n, pct(n, n_articles));
+        eprintln!(
+            "   → {} ({} rows, {:.1}% of articles)",
+            p.display(),
+            n,
+            pct(n, n_articles)
+        );
 
         let p = args.out.join("article_flags.parquet");
         output::write_dense_u32(&p, "flags", &extras.flags)?;
@@ -310,7 +349,10 @@ fn main() -> Result<()> {
     }
 
     let secs = started.elapsed().as_secs_f64();
-    eprintln!("\nGraph: {} nodes, {} edges", idx.n_articles, p2.edges_written);
+    eprintln!(
+        "\nGraph: {} nodes, {} edges",
+        idx.n_articles, p2.edges_written
+    );
     eprintln!(
         "Average out-degree: {:.1}",
         p2.edges_written as f64 / idx.n_articles.max(1) as f64
