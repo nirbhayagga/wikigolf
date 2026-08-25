@@ -1,0 +1,11 @@
+{
+  "name": "wikigolf-e2e",
+  "private": true,
+  "description": "Playwright smoke tests against a deployed WikiGolf (BASE_URL, default https://wikigolf.app)",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

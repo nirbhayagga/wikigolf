@@ -74,6 +74,11 @@ cargo build --release --bin pools
 cargo build --release --bin static_export
 ./target/release/static_export --data data --out static_site
 
+# End-to-end smoke tests (Playwright) run against a deployed site, never a
+# build. Default target is production; point BASE_URL at a local
+# `python -m http.server` over static_site to test an export before deploy.
+cd e2e && npm ci && npx playwright test          # or BASE_URL=http://127.0.0.1:8765 npx playwright test
+
 # Head-to-head duels exist but are DARK: routes mount only with
 # --enable-duels, and no UI references them. Kilobytes per room when on.
 

@@ -1108,7 +1108,19 @@ $('pause').onclick = () => {
   setVeil('paused');
 };
 
+// One navigation at a time. A lagged double-click used to fire go() twice
+// before the first fetch resolved, adding the article to the trail twice and
+// charging two clicks for one decision. The same-article guard covers the
+// second click landing after the first resolved.
+let NAV = false;
 async function go(id, isBack) {
+  if (NAV) return;
+  if (!isBack && state.cur && state.cur.id === id) return;
+  NAV = true;
+  try { return await goInner(id, isBack); } finally { NAV = false; }
+}
+
+async function goInner(id, isBack) {
   const q = new URLSearchParams();
   if (state.ban != null) q.set('ban_degree', state.ban);
   if (state.goal) q.set('goal', state.goal.id);
