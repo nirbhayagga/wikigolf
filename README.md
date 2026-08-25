@@ -1,4 +1,4 @@
-# Wikipedia Graph Pipeline
+# WikiGolf — and the Wikipedia link graph behind it
 
 Parse, compute, and visualize the English Wikipedia link network — a Rust two-pass
 parser that resolves article identity, then a Python pipeline that computes

@@ -3,8 +3,8 @@
 //! The static build serves the whole ritual (daily, round, archive, random
 //! races, the compass, route reveals, the map) from any dumb file host —
 //! Cloudflare Pages' free tier being the target — at the cost of what needs
-//! a live graph: custom/topic races, search, leaderboards. See the
-//! runbook's "static build" section for the tradeoff table.
+//! a live graph: custom/topic races, search, leaderboards. (The tradeoff
+//! table lives in the private ops runbook.)
 //!
 //!   cargo run --release --bin static_export -- --data data --out static_site
 //!
