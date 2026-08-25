@@ -396,8 +396,7 @@ fn main() -> Result<()> {
                     .collect();
                 if let Some(v) = difficulties.get_mut(key.as_str()) {
                     v["cd"] = json!(d);
-                } else if let Some(i) =
-                    key.strip_prefix('h').and_then(|s| s.parse::<usize>().ok())
+                } else if let Some(i) = key.strip_prefix('h').and_then(|s| s.parse::<usize>().ok())
                 {
                     if let Some(h) = holes.get_mut(i - 1) {
                         h["cd"] = json!(d);
