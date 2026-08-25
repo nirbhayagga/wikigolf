@@ -44,3 +44,8 @@ cufile.log
 # The static exporter's output tree — ~8 GB of generated files at enwiki
 # scale; deployed with wrangler, never committed.
 /static_site/
+
+# e2e (Playwright)
+/e2e/node_modules/
+/e2e/test-results/
+/e2e/playwright-report/

@@ -1,0 +1,25 @@
+# One weekly sweep per ecosystem, batched, so the repo gets a handful of
+# grouped PRs rather than a drip. Rust, Python, the e2e npm tree, the two
+# Dockerfiles, and the Actions themselves (which is what clears the Node
+# runner deprecation warnings as upstream ships new majors).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule: { interval: weekly }
+    groups: { cargo: { patterns: ["*"] } }
+  - package-ecosystem: pip
+    directory: /python
+    schedule: { interval: weekly }
+    groups: { pip: { patterns: ["*"] } }
+  - package-ecosystem: npm
+    directory: /e2e
+    schedule: { interval: weekly }
+    groups: { npm: { patterns: ["*"] } }
+  - package-ecosystem: docker
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups: { actions: { patterns: ["*"] } }
