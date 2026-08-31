@@ -379,9 +379,12 @@ and igraph for layout and communities, Datashader for rendering.
 
 ## Run it yourself
 
-The full game runs from one container and ~1.8 GB of data (attached to the
-GitHub release; CC BY-SA 4.0, derived from the English Wikipedia dump of
-1 Aug 2026):
+The hosted [wikigolf.app](https://wikigolf.app) is the free **static edition**:
+daily, rounds, random races, the compass, and post-race route reveals, served
+as plain files. Custom and topic races, title+alias search, from-here analysis
+on a give-up, and the leaderboard need the **full server** — which runs from
+one container and ~1.8 GB of data (attached to the GitHub release; CC BY-SA
+4.0, derived from the English Wikipedia dump of 1 Aug 2026):
 
 ```bash
 gh release download v1.0.0 --pattern '*.parquet' --dir data
