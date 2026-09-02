@@ -19,6 +19,10 @@
 <meta name="twitter:image" content="https://wikigolf.app/og.jpg">
 <meta name="theme-color" content="#070910">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='0.9em' font-size='90'%3E%E2%9B%B3%3C/text%3E%3C/svg%3E">
+<!-- PWA plumbing: the static export emits the manifest, icons and sw.js;
+     on the live server these 404 harmlessly and the SW never registers. -->
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <style>
   /* Themes.
      Every colour the page uses — including the ones the canvas paints — comes
@@ -2071,6 +2075,13 @@ window.addEventListener('keydown', e => {
     startRace('/api/daily').catch(()=>{});
   }
 })();
+
+// Static edition only: the live server has no sw.js, and caching /api/* would
+// be wrong anyway. The worker's cache name rotates with each export, so a
+// deploy invalidates everything at once.
+if (STATIC && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(()=>{});
+}
 </script>
 </body>
 </html>

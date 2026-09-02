@@ -42,6 +42,64 @@ use wiki_parser::graph::PathFinder;
 /// the page's fetch layer from /api to the file tree.
 const PAGE: &str = include_str!("../../static/index.html");
 const OG: &[u8] = include_bytes!("../../static/og.jpg");
+const ICONS: [(&str, &[u8]); 4] = [
+    ("icon-192.png", include_bytes!("../../static/icon-192.png")),
+    ("icon-512.png", include_bytes!("../../static/icon-512.png")),
+    (
+        "icon-maskable.png",
+        include_bytes!("../../static/icon-maskable.png"),
+    ),
+    (
+        "apple-touch-icon.png",
+        include_bytes!("../../static/apple-touch-icon.png"),
+    ),
+];
+const MANIFEST: &str = r##"{
+  "name": "WikiGolf",
+  "short_name": "WikiGolf",
+  "description": "Golf across Wikipedia: reach the goal article in the fewest clicks.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#070910",
+  "theme_color": "#070910",
+  "icons": [
+    {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
+    {"src": "/icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}
+"##;
+// {STAMP} is replaced with the export time: a deploy rotates the cache name,
+// so nothing served from a previous export can go stale. Navigations are
+// network-first (a page fix ships without waiting for a new export); the data
+// tree is cache-first because it is immutable within one export.
+const SW: &str = r#"const CACHE = 'wikigolf-{STAMP}';
+const SHELL = ['/', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
+self.addEventListener('install', e => {
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+});
+self.addEventListener('activate', e => {
+  e.waitUntil(caches.keys()
+    .then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k))))
+    .then(() => self.clients.claim()));
+});
+self.addEventListener('fetch', e => {
+  const req = e.request;
+  if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
+  if (req.mode === 'navigate') {
+    e.respondWith(fetch(req).then(r => {
+      const copy = r.clone();
+      caches.open(CACHE).then(c => c.put('/', copy));
+      return r;
+    }).catch(() => caches.match('/')));
+    return;
+  }
+  e.respondWith(caches.match(req).then(hit => hit || fetch(req).then(r => {
+    if (r.ok) { const copy = r.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
+    return r;
+  })));
+});
+"#;
 const PAGE_404: &str = "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>WikiGolf — not found</title>\n<meta name=\"robots\" content=\"noindex\">\n<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#070910;color:#e8ecf4;font:16px/1.6 system-ui,sans-serif;text-align:center}a{color:#5eead4}</style>\n</head><body><div><h1>&#9971; 404</h1><p>This hole doesn&rsquo;t exist. <a href=\"/\">Back to the course</a></p></div></body></html>\n";
 
 /// Articles per shard. ~880 keeps a shard around 250 KB once the CDN
@@ -149,6 +207,20 @@ fn main() -> Result<()> {
         PAGE.replacen("<html lang=\"en\">", "<html lang=\"en\" data-static>", 1),
     )?;
     fs::write(a.out.join("og.jpg"), OG)?;
+
+    // PWA plumbing: manifest, icons, and the versioned service worker.
+    fs::write(a.out.join("manifest.webmanifest"), MANIFEST)?;
+    for (name, bytes) in ICONS {
+        fs::write(a.out.join(name), bytes)?;
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    fs::write(
+        a.out.join("sw.js"),
+        SW.replace("{STAMP}", &stamp.to_string()),
+    )?;
 
     // Crawler plumbing. One real page, so the sitemap is one URL; the data
     // dirs are blocked to keep crawlers off tens of thousands of JSON shards.
