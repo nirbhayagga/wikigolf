@@ -42,6 +42,7 @@ use wiki_parser::graph::PathFinder;
 /// the page's fetch layer from /api to the file tree.
 const PAGE: &str = include_str!("../../static/index.html");
 const OG: &[u8] = include_bytes!("../../static/og.jpg");
+const PAGE_404: &str = "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>WikiGolf — not found</title>\n<meta name=\"robots\" content=\"noindex\">\n<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#070910;color:#e8ecf4;font:16px/1.6 system-ui,sans-serif;text-align:center}a{color:#5eead4}</style>\n</head><body><div><h1>&#9971; 404</h1><p>This hole doesn&rsquo;t exist. <a href=\"/\">Back to the course</a></p></div></body></html>\n";
 
 /// Articles per shard. ~880 keeps a shard around 250 KB once the CDN
 /// compresses it — one link-list click, one fetch.
@@ -148,6 +149,19 @@ fn main() -> Result<()> {
         PAGE.replacen("<html lang=\"en\">", "<html lang=\"en\" data-static>", 1),
     )?;
     fs::write(a.out.join("og.jpg"), OG)?;
+
+    // Crawler plumbing. One real page, so the sitemap is one URL; the data
+    // dirs are blocked to keep crawlers off tens of thousands of JSON shards.
+    fs::write(
+        a.out.join("robots.txt"),
+        "User-agent: *\nAllow: /\nDisallow: /shards/\nDisallow: /compass/\nDisallow: /daily/\nDisallow: /random/\n\nSitemap: https://wikigolf.app/sitemap.xml\n",
+    )?;
+    fs::write(
+        a.out.join("sitemap.xml"),
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n<url><loc>https://wikigolf.app/</loc></url>\n</urlset>\n",
+    )?;
+    // Cloudflare Pages serves /404.html for unknown paths automatically.
+    fs::write(a.out.join("404.html"), PAGE_404)?;
 
     let today = today_day();
     let today_number = today.saturating_sub(DAILY_EPOCH_DAY) + 1;

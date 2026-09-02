@@ -4,19 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WikiGolf</title>
-<!-- What a share unfurls into. No og:image yet — that wants a real raster
-     (a poster crop) hosted somewhere; the text card still beats a bare URL. -->
 <meta name="description" content="Golf across Wikipedia: get from one article to another in the fewest clicks. Par is the shortest route that exists — match it if you can.">
+<link rel="canonical" href="https://wikigolf.app/">
 <meta property="og:title" content="WikiGolf">
 <meta property="og:description" content="Golf across Wikipedia: reach the goal article in the fewest clicks. Par is the shortest route that exists.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="WikiGolf">
-<!-- Relative og:image: Discord, Slack and iMessage resolve it against the
-     page URL. (Facebook wants absolute and gets the text card instead —
-     acceptable until a canonical domain exists to hardcode.) -->
-<meta property="og:image" content="/og.jpg">
+<meta property="og:url" content="https://wikigolf.app/">
+<!-- Absolute og:image on purpose: Facebook and some scrapers ignore relative
+     URLs. Self-hosted server copies unfurl with the wikigolf.app card too,
+     which is accurate — it is the same game. -->
+<meta property="og:image" content="https://wikigolf.app/og.jpg">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="/og.jpg">
+<meta name="twitter:image" content="https://wikigolf.app/og.jpg">
 <meta name="theme-color" content="#070910">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='0.9em' font-size='90'%3E%E2%9B%B3%3C/text%3E%3C/svg%3E">
 <style>
@@ -621,7 +621,8 @@
     <!-- Data attribution is not optional: titles and links derive from
          English Wikipedia, which is CC BY-SA. The author credit is a handle
          on purpose — no email on a public page. -->
-    <div class="credits">WikiGolf &middot; made by nirb &middot; data from
+    <div class="credits">WikiGolf &middot; made by nirb &middot;
+      <a href="https://github.com/nirbhayagga/wikigolf" target="_blank" rel="noopener">source on GitHub</a> &middot; data from
       <a href="https://en.wikipedia.org" target="_blank" rel="noopener">English Wikipedia</a> (CC&nbsp;BY-SA&nbsp;4.0)<br>dump of 1&nbsp;Aug&nbsp;2026 &middot; read counts: July&nbsp;2026 &middot; not affiliated with Wikipedia or the Wikimedia Foundation</div>
   </footer>
 </aside>
