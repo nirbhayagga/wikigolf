@@ -436,7 +436,8 @@
             articles. Either way the address bar is always a share link to the
             exact race.</li>
         <li class="static-only"><b>Random race</b> draws from hundreds of
-            pre-built races at each difficulty. Daily and Round links are
+            pre-built races — pick a difficulty and, if you like, an exact
+            par with the &#127922; pickers. Daily and Round links are
             always shareable.</li>
         <li class="live-only">After a race: see <b>a shortest route</b>, watch
             it replayed on the map, and learn how many optimal routes existed
@@ -514,6 +515,25 @@
          the tie is visible: ★ settings belong to Daily, ⛳ to Round, and the
          replay box says outright that it works with either button. -->
     <div class="row pickers">
+      <!-- Static-only: the live server steers free play with the hub slider
+           instead. Pool rows carry exact par, so this is a filter, not a
+           walk-length guess. -->
+      <span class="pgroup" id="rpick" title="Applies to the Random race button">
+        <span class="picon">&#127922;</span>
+        <select id="rdiff" aria-label="Random race difficulty">
+          <option value="medium" selected>medium</option>
+          <option value="easy">easy</option>
+          <option value="hard">hard</option>
+        </select>
+        <select id="rpar" aria-label="Random race par">
+          <option value="">any par</option>
+          <option value="3">par 3</option>
+          <option value="4">par 4</option>
+          <option value="5">par 5</option>
+          <option value="6">par 6</option>
+          <option value="7">par 7</option>
+        </select>
+      </span>
       <span class="pgroup" title="Applies to the ★ Daily button">
         <span class="picon">&#9733;</span>
         <select id="ddiff" aria-label="Daily difficulty">
@@ -832,7 +852,16 @@ async function staticApi(p, o) {
       throw new Error('custom and topic races need the live server');
     const dif = q.get('difficulty') || 'easy';
     const rp = await sj(`random/${dif}.json`);
-    const r = rp.races[Math.floor(Math.random() * rp.races.length)];
+    // Par filter: pool rows carry the exact shortest distance, so choosing
+    // par 5 really means par 5 — not a walk-length upper bound.
+    const wantPar = +q.get('par') || 0;
+    let pool = rp.races;
+    if (wantPar) {
+      pool = pool.filter(r => (Array.isArray(r) ? r[4] : r.par) === wantPar);
+      if (!pool.length)
+        throw new Error(`the ${dif} pool has no par-${wantPar} races — try another difficulty`);
+    }
+    const r = pool[Math.floor(Math.random() * pool.length)];
     // v2 pool rows are {start, goal, par, routes} with full article objects
     // (desc, in_degree, views, x/y — the goal card and red map dot need
     // them). v1 rows were bare tuples; a cached file can still serve one.
@@ -1539,6 +1568,8 @@ async function startRace(endpoint, extra) {
     const q = extra ? `${extra}&ban_top=${HUB_STOPS[+$('hubs').value]}`
       : isDaily
       ? `difficulty=${$('ddiff').value}${anum ? `&number=${encodeURIComponent(anum)}` : ''}`
+      : STATIC
+      ? `difficulty=${$('rdiff').value}${$('rpar').value ? `&par=${$('rpar').value}` : ''}`
       : `difficulty=hard&ban_top=${HUB_STOPS[+$('hubs').value]}`;
     const diff = isDaily ? 'daily' : 'custom';
     const p = await api(`${endpoint}?${q}`);
@@ -2037,6 +2068,10 @@ window.addEventListener('keydown', e => {
     $('lgroup').parentElement.style.display = 'none';
     // Shard links carry no read counts, so that sort would be a no-op lie.
     for (const opt of [...$('lsort').options]) if (opt.value === 'read') opt.remove();
+  } else {
+    // Live free play is steered by the hub slider; the pool picker is the
+    // static replacement for it.
+    $('rpick').style.display = 'none';
   }
   META = await api('/api/meta');
   try { REGIONS = await api('/api/regions'); } catch { REGIONS = {}; }

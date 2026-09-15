@@ -59,3 +59,11 @@ test('a random race arms with a real goal', async ({ page }) => {
   await expect(page.locator('#goalmeta')).toContainText('inbound links');
   await expect(page.locator('#goalmeta')).not.toContainText('0 inbound links');
 });
+
+test('a chosen par is honoured', async ({ page }) => {
+  await page.goto('/');
+  await page.selectOption('#rdiff', 'hard');
+  await page.selectOption('#rpar', '5');
+  await page.locator('#new').click();
+  await expect(page.locator('#par')).toHaveText('5');
+});
