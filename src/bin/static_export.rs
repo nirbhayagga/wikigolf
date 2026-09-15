@@ -86,7 +86,7 @@ self.addEventListener('fetch', e => {
   })));
 });
 "#;
-const PAGE_404: &str = "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>WikiGolf — not found</title>\n<meta name=\"robots\" content=\"noindex\">\n<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#070910;color:#e8ecf4;font:16px/1.6 system-ui,sans-serif;text-align:center}a{color:#5eead4}</style>\n</head><body><div><h1>&#9971; 404</h1><p>This hole doesn&rsquo;t exist. <a href=\"/\">Back to the course</a></p></div></body></html>\n";
+const PAGE_404: &str = "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>WikiGolf — not found</title>\n<meta name=\"robots\" content=\"noindex\">\n<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#000;color:#e8ecf4;font:16px/1.6 system-ui,sans-serif;text-align:center}a{color:#5eead4}</style>\n</head><body><div><h1>&#9971; 404</h1><p>This hole doesn&rsquo;t exist. <a href=\"/\">Back to the course</a></p></div></body></html>\n";
 
 /// Articles per shard. ~880 keeps a shard around 250 KB once the CDN
 /// compresses it — one link-list click, one fetch.

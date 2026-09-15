@@ -17,7 +17,7 @@
 <meta property="og:image" content="https://wikigolf.app/og.jpg">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://wikigolf.app/og.jpg">
-<meta name="theme-color" content="#070910">
+<meta name="theme-color" content="#000000">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='0.9em' font-size='90'%3E%E2%9B%B3%3C/text%3E%3C/svg%3E">
 <!-- PWA plumbing: the static export emits the manifest, icons and sw.js;
      on the live server these 404 harmlessly and the SW never registers. -->
@@ -30,15 +30,18 @@
      reads them through readTheme(); anything hardcoded in a fillStyle would
      silently ignore the theme, which is how the map ends up black on a light
      background. */
+  /* Midnight is true black: neutral greys on #000, no blue cast, easy on
+     OLED. The old blue-tinged surfaces read as a tint rather than a theme;
+     the accents and from/to/trail colours carry all the colour now. */
   :root, :root[data-theme="midnight"] {
-    --bg:#070910; --bg2:#0d1119; --panel:#11151f; --card:#161b27;
-    --line:#232a3a; --line2:#2e374b;
-    --text:#e8ecf4; --dim:#8791a8; --faint:#7c8494;
+    --bg:#000000; --bg2:#060606; --panel:#0a0a0a; --card:#111111;
+    --line:#242424; --line2:#303030;
+    --text:#ececec; --dim:#969696; --faint:#7e7e7e;
     --accent:#5eead4; --accent2:#38bdf8;
-    --from:#4ade80; --to:#fb7185; --trail:#fbbf24; --locked:#4a5163;
-    --hover:#1a2130;
-    --stage-a:#0e1420; --stage-b:#070910;
-    --canvas-bg:#070910; --canvas-ink:232,236,244; --canvas-halo:7,9,16;
+    --from:#4ade80; --to:#fb7185; --trail:#fbbf24; --locked:#4c4c4c;
+    --hover:#181818;
+    --stage-a:#0c0c0c; --stage-b:#000000;
+    --canvas-bg:#000000; --canvas-ink:236,236,236; --canvas-halo:0,0,0;
     --dot-s:58%; --dot-l:60%; --dot-a:.30;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   }
@@ -48,7 +51,7 @@
     --line:#dcd7ca; --line2:#c9c3b2;
     --text:#211f1a; --dim:#6a6455; --faint:#767060;
     --accent:#0f7a6b; --accent2:#1f6f9c;
-    --from:#1b7a3e; --to:#b6304a; --trail:#a86a06; --locked:#b3ac9c;
+    --from:#1b7a3e; --to:#b6304a; --trail:#996105; --locked:#b3ac9c;
     --hover:#e6e2d7;
     --stage-a:#ffffff; --stage-b:#eceadf;
     --canvas-bg:#f6f4ee; --canvas-ink:33,31,26; --canvas-halo:255,255,255;
@@ -71,9 +74,9 @@
   :root[data-theme="blossom"] {
     --bg:#f7e8ec; --bg2:#f1dde3; --panel:#fbf1f4; --card:#f4e3e8;
     --line:#e5cdd6; --line2:#d5b4c1;
-    --text:#362229; --dim:#8c6a76; --faint:#977883;
-    --accent:#c04d6f; --accent2:#9c6bb3;
-    --from:#2f8f63; --to:#c23a5a; --trail:#b07c1f; --locked:#c9aeb9;
+    --text:#362229; --dim:#866671; --faint:#856671;
+    --accent:#b44062; --accent2:#8953a2;
+    --from:#277853; --to:#be3958; --trail:#896118; --locked:#c9aeb9;
     --hover:#f0dbe2;
     --stage-a:#fdf6f8; --stage-b:#f3e2e8;
     --canvas-bg:#f9edf1; --canvas-ink:54,34,41; --canvas-halo:255,255,255;
@@ -134,6 +137,7 @@
   #zoomer button { width:28px; height:28px; padding:0; font-size:15px; line-height:1; }
 
   #nomap { position:absolute; inset:0; display:none; place-items:center; text-align:center;
+    pointer-events:none; /* informational; must never eat clicks meant for what's under it */
            color:var(--dim); padding:40px; }
 
   /* ---------- panel ---------- */
@@ -385,6 +389,7 @@
   #duelbar { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
   #duelbar .chip { font-size:11px; color:var(--dim); background:var(--card); border:1px solid var(--line); border-radius:10px; padding:2px 8px; }
   #duelbar .chip b { color:var(--text); }
+  #duelbar .chip.copy { cursor:pointer; }
 </style>
 </head>
 <body>
@@ -434,12 +439,6 @@
             where you are — links that exist in this race's graph are playable
             and count as clicks; the rest are disabled. The clock keeps
             running.</li>
-        <li class="static-only">Want custom races, article search, from-here
-            analysis and a leaderboard? That's the <b>full edition</b> — free
-            to self-host from
-            <a href="https://github.com/nirbhayagga/wikigolf" target="_blank"
-               rel="noopener">the source</a>: one container plus the released
-            data.</li>
         <li class="live-only">Links are <b>grouped by map region</b> and carry
             a one-line description. Filter, sort (including by how much each
             article is actually <b>read</b>), or flip off <b>details</b> for
@@ -447,12 +446,9 @@
         <li class="static-only">Links carry a one-line description where the
             encyclopedia has one. <b>Filter</b> and <b>sort</b> them, or flip
             off <b>details</b> for bare names.</li>
-        <li class="live-only">The <b>🧭 Compass</b> spends a limited charge to
-            show the true distance to the goal from every link you can see.
-            Charges scale with par — spend them where it hurts.</li>
-        <li class="static-only">The <b>🧭 Compass</b> spends a limited charge
-            to show the true distance to the goal from the links you can see.
-            Charges scale with par — spend them where it hurts.</li>
+        <li>The <b>🧭 Compass</b> spends a limited charge to show the true
+            distance to the goal from the links you can see. Charges scale
+            with par — spend them where it hurts.</li>
         <li><b>Hub exclusion</b> locks the biggest articles so you cannot route
             through "United States" every time; a 🔒 link is visible but
             untakeable. Par is computed under the same lock.</li>
@@ -472,17 +468,16 @@
             pre-built races — pick a difficulty and, if you like, an exact
             par with the &#127922; pickers. Daily and Round links are
             always shareable.</li>
-        <li class="live-only">After a race: see <b>a shortest route</b>, watch
-            it replayed on the map, and learn how many optimal routes existed
-            — one route at par 4 is a very different puzzle from two
-            hundred.</li>
-        <li class="static-only">After a race: see <b>a shortest route</b>,
-            watch it replayed on the map, and learn how many optimal routes
-            existed — one route at par 4 is a very different puzzle from two
-            hundred.</li>
-        <li class="static-only">This is the free daily edition. The full
-            server adds topic and custom races, region-grouped links,
-            from-here analysis on a give-up, and the leaderboard.</li>
+        <li>After a race: see <b>a shortest route</b>, watch it replayed on
+            the map, and learn how many optimal routes existed — one route at
+            par 4 is a very different puzzle from two hundred.</li>
+        <li class="static-only">This is the free static edition. The
+            <b>full edition</b> adds custom and topic races, article search,
+            region-grouped links, from-here analysis on a give-up, and a
+            leaderboard — free to self-host from
+            <a href="https://github.com/nirbhayagga/wikigolf" target="_blank"
+               rel="noopener">the source</a>: one container plus the released
+            data.</li>
       </ol>
       <label class="hcheck"><input type="checkbox" id="hnever"> Don't show this again</label>
       <div class="row" style="margin-top:14px">
@@ -622,6 +617,7 @@
         </div>
         <div style="display:flex; gap:6px; margin-top:4px">
           <input id="duelcode" placeholder="room code" maxlength="6" style="flex:1; min-width:0; text-transform:uppercase">
+          <button id="duelcopy" title="Copy the room code">&#10697;</button>
           <button class="primary" id="dueljoin">Join</button>
         </div>
         <div class="lbl2" id="duelerr"></div>
@@ -922,7 +918,20 @@ async function staticApi(p, o) {
       if (!pool.length)
         throw new Error(`the ${dif} pool has no par-${wantPar} races — try another difficulty`);
     }
-    const r = pool[Math.floor(Math.random() * pool.length)];
+    // No repeats while the pool allows it: remember the last 60 draws per
+    // difficulty and draw around them. A random draw from 800 otherwise
+    // shows a repeat within ~34 races (birthday paradox), which feels
+    // broken long before the pool is actually exhausted.
+    const rkey = x => Array.isArray(x) ? `${x[0]}-${x[2]}` : `${x.start.id}-${x.goal.id}`;
+    let recent = [];
+    try { recent = JSON.parse(localStorage.getItem('wr-recent-' + dif)) || []; } catch {}
+    const seen = new Set(recent);
+    const fresh = pool.filter(x => !seen.has(rkey(x)));
+    const from = fresh.length ? fresh : pool;
+    const r = from[Math.floor(Math.random() * from.length)];
+    recent.push(rkey(r));
+    while (recent.length > 60) recent.shift();
+    try { localStorage.setItem('wr-recent-' + dif, JSON.stringify(recent)); } catch {}
     // v2 pool rows are {start, goal, par, routes} with full article objects
     // (desc, in_degree, views, x/y — the goal card and red map dot need
     // them). v1 rows were bare tuples; a cached file can still serve one.
@@ -1939,7 +1948,18 @@ function duelRender() {
   const rows = Object.entries(DUEL.progress).map(([n, p]) =>
     `<span class="chip"><b>${esc(n)}</b> ${p.done ? '&#127937;' : ''} ${p.clicks ?? 0} clicks</span>`);
   $('duelbar').innerHTML =
-    `<span class="chip">room <b>${esc(DUEL.code)}</b></span>` + rows.join('');
+    `<span class="chip copy" title="Copy the room code">room <b>${esc(DUEL.code)}</b> &#10697;</span>`
+    + rows.join('');
+}
+async function duelCopy(code, flash) {
+  if (!code) return;
+  try { await navigator.clipboard.writeText(code); }
+  catch {
+    // Clipboard API needs a secure context; the LAN-http fallback still works.
+    $('duelcode').value = code; $('duelcode').select();
+    try { document.execCommand('copy'); } catch {}
+  }
+  if (flash) { const keep = flash.innerHTML; flash.innerHTML = '&#10003;'; setTimeout(() => { flash.innerHTML = keep; }, 1200); }
 }
 function duelConnect(code, name) {
   duelStop();
@@ -1994,6 +2014,11 @@ $('dueljoin').onclick = () => {
   if (code.length !== 6) { $('duelerr').textContent = 'room codes are 6 characters'; return; }
   $('duelerr').textContent = '';
   duelConnect(code, $('duelname').value.trim() || 'player 2');
+};
+$('duelcopy').onclick = () => duelCopy($('duelcode').value.trim().toUpperCase(), $('duelcopy'));
+$('duelbar').onclick = e => {
+  const chip = e.target.closest('.chip.copy');
+  if (chip && DUEL) duelCopy(DUEL.code, chip);
 };
 
 /* ---------------- controls ---------------- */
