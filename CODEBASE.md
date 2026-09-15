@@ -1,7 +1,7 @@
 # wiki-graph codebase
 
 Every file, what it does, and what it produces. Written 16 August 2026, last
-swept 17 August 2026.
+swept 15 September 2026.
 
 Two independent programs share one data format:
 
@@ -135,6 +135,37 @@ titles · redirects · edges · categories · article_sizes   (.parquet)
   group *repulsion*, which shatters one component into islands.
 - **`run_with_timer` cannot tick during igraph/graph-tool calls** — they hold
   the GIL. A frozen `00:00:00` is not a hang.
+
+### Phase 2's GPU workarounds (dead code — kept only as a record)
+
+**None of this runs.** `_phase2_gpu` is unreachable in practice because
+`force_atlas2` segfaults, and `layout.backend` defaults to `"cpu"`. It is
+documented because the workarounds were expensive to find and would be needed
+again if cuGraph ever ships a working force layout on its current API.
+
+`_phase2_gpu` existed to fit 28M vertices / 482M edges into 16GB VRAM. Each
+step was load-bearing:
+
+1. Edges are **pre-symmetrized on CPU** (both directions + dedup + self-loop
+   removal) because cuGraph's internal symmetrization blows past VRAM.
+2. The CSR is built **on CPU with scipy**, then handed over via
+   `from_cudf_adjlist` — `from_cudf_edgelist` needs huge temporary sort
+   buffers.
+3. RMM is reinitialized with `managed_memory=True` so overflow pages to
+   system RAM over PCIe.
+4. The graph is constructed as `directed=True`, then
+   `G.graph_properties.directed` is flipped to `False` so FA2/Leiden skip
+   their own `to_undirected()`. Note the assert: `is_directed()` reads
+   `graph_properties.directed`, not `properties.directed`.
+5. `G.nodes()` is **monkey-patched** on the instance to return a precomputed
+   range — cuGraph otherwise reconstructs and concats the edge list (~8GB,
+   `std::bad_alloc`).
+
+All GPU→CPU transfers go through `.to_arrow().to_pandas()` to bypass Numba
+driver bugs on GeForce cards. `layout.backend: "auto"` swallows GPU
+*exceptions* and falls through to the CPU path, `"gpu"` re-raises so failures
+stay visible — but neither helps against a segfault, which kills the
+interpreter outright.
 
 ---
 
