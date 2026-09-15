@@ -57,7 +57,13 @@ test('a random race arms with a real goal', async ({ page }) => {
   await page.locator('#new').click();
   await expect(page.locator('#veilbtn')).toHaveText('Start race');
   await expect(page.locator('#goalmeta')).toContainText('inbound links');
-  await expect(page.locator('#goalmeta')).not.toContainText('0 inbound links');
+  // The count must be a real number, not the bare 0 of a missing in_degree.
+  // (Substring matching bit us here once: "1,020 inbound links" contains
+  // "0 inbound links".)
+  const meta = (await page.locator('#goalmeta').textContent()) || '';
+  const count = meta.match(/([\d,]+) inbound links/);
+  expect(count).not.toBeNull();
+  expect(count[1]).not.toBe('0');
 });
 
 test('a chosen par is honoured', async ({ page }) => {

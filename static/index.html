@@ -380,6 +380,11 @@
   #rbody a { color:var(--accent2); pointer-events:none; text-decoration:none; border-bottom:1px dotted var(--line2); }
   #rbody h1, #rbody h2, #rbody h3 { line-height:1.25; }
   .rfoot { padding:8px 14px; border-top:1px solid var(--line); font-size:10px; color:var(--faint); }
+  #rbody a.ingraph { pointer-events:auto; cursor:pointer; color:var(--accent); border-bottom:1px solid var(--accent); }
+  /* Duels: presence chips under the score row. */
+  #duelbar { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
+  #duelbar .chip { font-size:11px; color:var(--dim); background:var(--card); border:1px solid var(--line); border-radius:10px; padding:2px 8px; }
+  #duelbar .chip b { color:var(--text); }
 </style>
 </head>
 <body>
@@ -389,6 +394,7 @@
 
   <div id="hud" class="glass">
     <div class="big"><span id="clicks">0</span> clicks<i>/</i><span id="par">?</span> par<i>·</i><span id="time">0:00</span></div>
+    <div id="duelbar"></div>
     <div class="sub" id="mapmeta"></div>
   </div>
 
@@ -425,8 +431,15 @@
             <b>Par ⛳</b>; every extra click is a stroke — Bogey, Double bogey.
             Under par is impossible, which is the point.</li>
         <li>The <b>&#128214;</b> button pulls up the live Wikipedia article for
-            where you are — a reading aid, not a back door: its links are
-            disabled, and the clock keeps running.</li>
+            where you are — links that exist in this race's graph are playable
+            and count as clicks; the rest are disabled. The clock keeps
+            running.</li>
+        <li class="static-only">Want custom races, article search, from-here
+            analysis and a leaderboard? That's the <b>full edition</b> — free
+            to self-host from
+            <a href="https://github.com/nirbhayagga/wikigolf" target="_blank"
+               rel="noopener">the source</a>: one container plus the released
+            data.</li>
         <li class="live-only">Links are <b>grouped by map region</b> and carry
             a one-line description. Filter, sort (including by how much each
             article is actually <b>read</b>), or flip off <b>details</b> for
@@ -600,6 +613,19 @@
         <select id="topic" style="flex:1; min-width:0"><option value="">pick a topic&hellip;</option></select>
         <button class="primary" id="tgo" disabled>Go</button>
       </div>
+      <!-- Shown only when /api/meta says the duel routes are mounted. -->
+      <div id="duelbox" style="display:none">
+        <div class="lbl" style="margin-top:10px">Duel &mdash; race a friend on the same board</div>
+        <div style="display:flex; gap:6px">
+          <input id="duelname" placeholder="your name" maxlength="24" style="flex:1; min-width:0">
+          <button class="primary" id="duelnew">New room</button>
+        </div>
+        <div style="display:flex; gap:6px; margin-top:4px">
+          <input id="duelcode" placeholder="room code" maxlength="6" style="flex:1; min-width:0; text-transform:uppercase">
+          <button class="primary" id="dueljoin">Join</button>
+        </div>
+        <div class="lbl2" id="duelerr"></div>
+      </div>
     </details>
   </header>
 
@@ -681,7 +707,8 @@
     </div>
     <div id="rbody"></div>
     <div class="rfoot">Live English Wikipedia (CC&nbsp;BY-SA) &mdash; may differ from the
-      graph snapshot you're racing on. Links here are disabled; the clock keeps running.</div>
+      graph snapshot you're racing on. <b>Underlined links are in this race's graph and
+      count as real clicks</b>; the rest are disabled. The clock keeps running.</div>
   </div>
 </div>
 
@@ -1223,6 +1250,7 @@ async function goInner(id, isBack) {
     ? 'also: ' + d.aliases.join(', ') : '';
   $('clicks').textContent = clicks;
   $('clicks').className = state.par!=null && clicks>state.par ? 'par-over' : 'par-ok';
+  if (!state.done) duelSend({ type: 'click', at: d.title, clicks });
   $('trail').innerHTML = state.trail.map(a=>`<b>${esc(a.title)}</b>`).join(' &rsaquo; ');
   $('trail').scrollTop = 1e6;
   // !!state.veil: this runs on every navigation, and must not re-enable the
@@ -1420,6 +1448,7 @@ async function finish(won) {
   $('pause').disabled = true;
   updateCompass();
   const clicks = state.trail.length-1, par = state.par;
+  if (won) duelSend({ type: 'finish', clicks, ms: Math.round(state.elapsed) });
 
   // Golf terms, because the game is golf. Par is the optimal route, so
   // under-par cannot exist honestly — a run that shows it was jumped, and a
@@ -1627,6 +1656,8 @@ async function startRace(endpoint, extra) {
    holes so the two can never drift: a hole IS a race, with the compass,
    the map, the veil and the clock all behaving identically. */
 async function adoptPuzzle(p, opts) {
+  // Starting any race that isn't the duel's own board leaves the room.
+  if (DUEL && !DUEL.adopting) duelStop();
   state = blank();
   stopDailyTicker();
   $('nexthole').style.display = 'none';
@@ -1865,6 +1896,23 @@ async function openReader() {
     for (const el of doc.querySelectorAll('script')) el.remove();
     $('rbody').innerHTML = doc.body.innerHTML;
     $('rbody').scrollTop = 0;
+    // Links that exist in this race's graph become playable — a click here
+    // goes through go(), so it counts exactly like a click in the list.
+    // Links via redirect aliases don't match a graph title and stay inert.
+    const byTitle = new Map((a.links || []).map(l => [l.title, l]));
+    for (const el of $('rbody').querySelectorAll('a')) {
+      const href = el.getAttribute('href') || '';
+      if (!href.startsWith('./')) continue;
+      let t;
+      try { t = decodeURIComponent(href.slice(2).split('#')[0]).replace(/_/g, ' '); }
+      catch { continue; }
+      const link = byTitle.get(t);
+      if (!link || link.banned) continue;
+      el.classList.add('ingraph');
+      el.addEventListener('click', ev => {
+        ev.preventDefault(); closeReader(); go(link.id).catch(()=>{});
+      });
+    }
   } catch (e) {
     $('rbody').innerHTML =
       `<div class="empty">couldn't load the article &mdash; ${esc(e.message)}</div>`;
@@ -1873,6 +1921,80 @@ async function openReader() {
 $('readbtn').onclick = openReader;
 $('rclose').onclick = closeReader;
 $('reader').onclick = e => { if (e.target.id === 'reader') closeReader(); };
+
+/* ---------------- duels (live server only, --enable-duels) ----------------
+   The server relays frames and referees presence; the room's race is
+   adopted as a normal issued run — same from/to for everyone, par
+   recomputed identically — so the clock, compass and card behave exactly
+   like any race. Duels never touch the leaderboard. */
+let DUEL = null;
+function duelStop() {
+  if (!DUEL) return;
+  const d = DUEL; DUEL = null;
+  try { d.ws.close(); } catch {}
+  $('duelbar').innerHTML = '';
+}
+function duelRender() {
+  if (!DUEL) return;
+  const rows = Object.entries(DUEL.progress).map(([n, p]) =>
+    `<span class="chip"><b>${esc(n)}</b> ${p.done ? '&#127937;' : ''} ${p.clicks ?? 0} clicks</span>`);
+  $('duelbar').innerHTML =
+    `<span class="chip">room <b>${esc(DUEL.code)}</b></span>` + rows.join('');
+}
+function duelConnect(code, name) {
+  duelStop();
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(
+    `${proto}://${location.host}/api/duel/ws/${encodeURIComponent(code)}?name=${encodeURIComponent(name)}`);
+  DUEL = { code, name, ws, progress: {}, adopting: false };
+  ws.onmessage = async ev => {
+    if (!DUEL || DUEL.ws !== ws) return;
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === 'error') { $('duelerr').textContent = m.error; duelStop(); return; }
+    if (m.type === 'room') {
+      $('duelerr').textContent = '';
+      DUEL.adopting = true;
+      try { await startRace('/api/puzzle', `from=${m.start.id}&to=${m.goal.id}`); }
+      catch {} finally { if (DUEL) DUEL.adopting = false; }
+      duelRender();
+      return;
+    }
+    if (m.type === 'joined' || m.type === 'left') {
+      const have = new Set(m.players || []);
+      for (const n of Object.keys(DUEL.progress)) if (!have.has(n)) delete DUEL.progress[n];
+      for (const n of have) if (n !== DUEL.name) DUEL.progress[n] ??= { clicks: 0 };
+      duelRender();
+      return;
+    }
+    if (m.name && m.name !== DUEL.name) {
+      const p = DUEL.progress[m.name] ??= { clicks: 0 };
+      if (m.type === 'click') p.clicks = m.clicks;
+      if (m.type === 'finish') { p.clicks = m.clicks; p.done = true; }
+      duelRender();
+    }
+  };
+  ws.onclose = () => { if (DUEL && DUEL.ws === ws) { DUEL = null; $('duelbar').innerHTML = ''; } };
+}
+function duelSend(frame) {
+  if (DUEL && DUEL.ws.readyState === 1) {
+    try { DUEL.ws.send(JSON.stringify(frame)); } catch {}
+  }
+}
+$('duelnew').onclick = async () => {
+  const name = $('duelname').value.trim() || 'player 1';
+  $('duelerr').textContent = '';
+  try {
+    const r = await api('/api/duel/new', { method: 'POST' });
+    $('duelcode').value = r.code;
+    duelConnect(r.code, name);
+  } catch (e) { $('duelerr').textContent = e.message; }
+};
+$('dueljoin').onclick = () => {
+  const code = $('duelcode').value.trim().toUpperCase();
+  if (code.length !== 6) { $('duelerr').textContent = 'room codes are 6 characters'; return; }
+  $('duelerr').textContent = '';
+  duelConnect(code, $('duelname').value.trim() || 'player 2');
+};
 
 /* ---------------- controls ---------------- */
 // .catch(()=>{}): startRace already rendered the message into the link list,
@@ -2143,6 +2265,7 @@ window.addEventListener('keydown', e => {
   }
   META = await api('/api/meta');
   try { REGIONS = await api('/api/regions'); } catch { REGIONS = {}; }
+  if (!STATIC && META.duels) $('duelbox').style.display = '';
   $('mapmeta').textContent =
     `${META.articles.toLocaleString()} articles · ${META.edges.toLocaleString()} links`;
   if (META.has_map) {

@@ -54,21 +54,7 @@ const ICONS: [(&str, &[u8]); 4] = [
         include_bytes!("../../static/apple-touch-icon.png"),
     ),
 ];
-const MANIFEST: &str = r##"{
-  "name": "WikiGolf",
-  "short_name": "WikiGolf",
-  "description": "Golf across Wikipedia: reach the goal article in the fewest clicks.",
-  "start_url": "/",
-  "display": "standalone",
-  "background_color": "#070910",
-  "theme_color": "#070910",
-  "icons": [
-    {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
-    {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
-    {"src": "/icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
-  ]
-}
-"##;
+const MANIFEST: &str = include_str!("../../static/manifest.webmanifest");
 // {STAMP} is replaced with the export time: a deploy rotates the cache name,
 // so nothing served from a previous export can go stale. Navigations are
 // network-first (a page fix ships without waiting for a new export); the data

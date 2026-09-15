@@ -401,6 +401,9 @@ struct Meta {
     pools: bool,
     /// Whether monthly pageview counts are loaded (pageviews.parquet).
     views: bool,
+    /// Whether the head-to-head duel routes are mounted (--enable-duels) —
+    /// the page shows the duel controls only when this is true.
+    duels: bool,
     bounds: Option<[f32; 4]>,
 }
 
@@ -591,6 +594,30 @@ async fn index() -> impl IntoResponse {
     )
 }
 
+/// PWA installability: the manifest and icons the page's <head> references.
+/// Compiled in like the page itself. No service worker on the live server —
+/// the page only registers one under data-static, and caching /api/* would
+/// be wrong anyway; this buys install-to-home-screen, not offline.
+async fn manifest() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "application/manifest+json"),
+            (header::CACHE_CONTROL, "public, max-age=604800"),
+        ],
+        include_str!("../../static/manifest.webmanifest"),
+    )
+}
+
+fn png(bytes: &'static [u8]) -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=604800"),
+        ],
+        bytes,
+    )
+}
+
 /// Region names, so the link list can group by topic instead of showing a
 /// flat wall of several hundred links. Sent once with the page rather than per
 /// article: there are at most a few hundred and they never change while the
@@ -623,6 +650,7 @@ async fn meta(State(s): State<Shared>) -> Json<Meta> {
         has_map: s.game.layout.is_some(),
         pools: s.game.has_pools(),
         views: !s.game.views.is_empty(),
+        duels: s.duels.is_some(),
         bounds,
     })
 }
@@ -827,6 +855,30 @@ async fn puzzle(
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(1)
         });
+
+    // An exact par, pool-drawn — the static edition's picker, honoured live.
+    // Pool-only by design: rejection sampling cannot target a par honestly.
+    if let Some(par) = q.get("par").and_then(|v| v.parse::<usize>().ok()) {
+        if !s.game.has_pools() {
+            return err("choosing a par needs the pools file").into_response();
+        }
+        let out = tokio::task::spawn_blocking(move || {
+            s.with_finder(|g, pf| {
+                let mut rng = Rng::new(seed);
+                g.puzzle_at_par(pf, d, par, &mut rng)
+            })
+            .map(|p| issue(&s, p, name.clone(), None))
+        })
+        .await;
+        return match out {
+            Ok(Some(p)) => Json(p).into_response(),
+            Ok(None) => err(format!(
+                "no par-{par} races at that difficulty — try another combination"
+            ))
+            .into_response(),
+            Err(_) => err("puzzle generation failed").into_response(),
+        };
+    }
 
     let ban_top = q.get("ban_top").and_then(|v| v.parse::<usize>().ok());
     let out = tokio::task::spawn_blocking(move || {
@@ -1490,6 +1542,23 @@ async fn serve() -> Result<()> {
         .merge(duel_routes)
         .route("/", get(index))
         .route("/og.jpg", get(og_image))
+        .route("/manifest.webmanifest", get(manifest))
+        .route(
+            "/icon-192.png",
+            get(|| async { png(include_bytes!("../../static/icon-192.png")) }),
+        )
+        .route(
+            "/icon-512.png",
+            get(|| async { png(include_bytes!("../../static/icon-512.png")) }),
+        )
+        .route(
+            "/icon-maskable.png",
+            get(|| async { png(include_bytes!("../../static/icon-maskable.png")) }),
+        )
+        .route(
+            "/apple-touch-icon.png",
+            get(|| async { png(include_bytes!("../../static/apple-touch-icon.png")) }),
+        )
         .route("/api/meta", get(meta))
         .route("/api/regions", get(regions))
         .route("/api/search", get(search))

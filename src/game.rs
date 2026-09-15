@@ -802,6 +802,43 @@ impl Game {
         self.puzzle_with(pf, None, 3, rng)
     }
 
+    /// Free play at one exact par within a difficulty — the "choose your
+    /// par" request. Pool-only, no rejection-sampling fallback: the fallback
+    /// cannot target a par, and returning a different one than asked would
+    /// be a quiet lie. Picks are re-verified under the difficulty's ban.
+    pub fn puzzle_at_par(
+        &self,
+        pf: &mut PathFinder,
+        d: Difficulty,
+        par: usize,
+        rng: &mut Rng,
+    ) -> Option<Puzzle> {
+        let pools = self.pools.as_ref()?;
+        let (ban, _) = d.rules();
+        let rev = &self.graph.reverse;
+        let banned: Box<dyn Fn(u32) -> bool + '_> = match ban {
+            Some(limit) => Box::new(move |v: u32| rev.degree(v) > limit),
+            None => Box::new(|_| false),
+        };
+        for _ in 0..8 {
+            let Some((a, b)) = pools.pick_par(d, par, rng) else {
+                break;
+            };
+            let Some(path) = pf.shortest_path(&self.graph, a, b, &banned) else {
+                continue;
+            };
+            if path.len() - 1 == par {
+                return Some(Puzzle {
+                    start: a,
+                    goal: b,
+                    ban_degree: ban,
+                    optimal: par,
+                });
+            }
+        }
+        None
+    }
+
     /// A race where both endpoints come from one map region (community).
     ///
     /// Regions are topical — that is the whole point of Leiden — so this is

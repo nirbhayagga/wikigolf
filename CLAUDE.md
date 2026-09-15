@@ -76,8 +76,8 @@ cargo build --release --bin static_export
 # `python -m http.server` over static_site to test an export before deploy.
 cd e2e && npm ci && npx playwright test          # or BASE_URL=http://127.0.0.1:8765 npx playwright test
 
-# Head-to-head duels exist but are DARK: routes mount only with
-# --enable-duels, and no UI references them. Kilobytes per room when on.
+# Head-to-head duels: routes mount only with --enable-duels; the page
+# shows the duel controls when /api/meta says they're on. Kilobytes per room.
 
 docker compose -f docker-compose.game.yml up -d         # game behind Traefik (.env: RACE_HOST etc.)
 docker compose -f docker-compose.game.direct.yml up -d  # game on a bare host port
