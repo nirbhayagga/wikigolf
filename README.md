@@ -321,6 +321,24 @@ websocket relay are compiled in, mounted only under `--enable-duels`, and no
 UI references them yet — multiplayer costs kilobytes per room, so the
 engineering is banked while the feature waits for players.
 
+## Run it yourself
+
+The hosted [wikigolf.app](https://wikigolf.app) is the free **static edition**:
+daily, rounds, random races, the compass, and post-race route reveals, served
+as plain files. Custom and topic races, title+alias search, from-here analysis
+on a give-up, and the leaderboard need the **full server** — which runs from
+one container and ~1.8 GB of data (attached to the GitHub release; CC BY-SA
+4.0, derived from the English Wikipedia dump of 1 Aug 2026):
+
+```bash
+gh release download v1.0.0 --pattern '*.parquet' --dir data
+docker run -d -p 8080:8080 -v ./data:/data:ro ghcr.io/nirbhayagga/wikigolf:latest
+# ~7 GB RAM, ~2 minutes to load, then http://localhost:8080
+```
+
+`titles` + `edges` are required; the rest degrade gracefully. Add
+`--no-alias-search` to the command line inside the container to save ~450 MB.
+
 ## Docker deployment
 
 Two independent images that share no code.
@@ -373,24 +391,6 @@ and the method is not documented publicly, so nothing here is derived from it.
 
 This is an independent implementation: Rust for parsing and the game, graph-tool
 and igraph for layout and communities, Datashader for rendering.
-
-## Run it yourself
-
-The hosted [wikigolf.app](https://wikigolf.app) is the free **static edition**:
-daily, rounds, random races, the compass, and post-race route reveals, served
-as plain files. Custom and topic races, title+alias search, from-here analysis
-on a give-up, and the leaderboard need the **full server** — which runs from
-one container and ~1.8 GB of data (attached to the GitHub release; CC BY-SA
-4.0, derived from the English Wikipedia dump of 1 Aug 2026):
-
-```bash
-gh release download v1.0.0 --pattern '*.parquet' --dir data
-docker run -d -p 8080:8080 -v ./data:/data:ro ghcr.io/nirbhayagga/wikigolf:latest
-# ~7 GB RAM, ~2 minutes to load, then http://localhost:8080
-```
-
-`titles` + `edges` are required; the rest degrade gracefully. Add
-`--no-alias-search` to the command line inside the container to save ~450 MB.
 
 ## License
 
