@@ -26,7 +26,7 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -40,7 +40,6 @@ use wiki_parser::graph::PathFinder;
 /// The page itself and its share card ride along, so the out directory IS
 /// the deploy — nothing else to gather. data-static on <html> is what flips
 /// the page's fetch layer from /api to the file tree.
-const PAGE: &str = include_str!("../../static/index.html");
 const OG: &[u8] = include_bytes!("../../static/og.jpg");
 const ICONS: [(&str, &[u8]); 4] = [
     ("icon-192.png", include_bytes!("../../static/icon-192.png")),
@@ -100,6 +99,11 @@ struct Args {
 
     #[arg(short, long, default_value = "static_site")]
     out: PathBuf,
+
+    /// Refresh only the page and shell assets of an existing export.
+    /// Does not load Parquet or rewrite puzzles, shards, maps or metadata.
+    #[arg(long)]
+    ui_only: bool,
 
     /// Future dailies/rounds to pre-generate. Each daily file costs ~2 KB,
     /// so a whole year is ~700 KB — the default makes staleness an annual
@@ -175,8 +179,65 @@ fn trunc(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+/// All files that can change without regenerating graph-derived data.
+fn write_shell(out: &Path) -> Result<()> {
+    fs::write(out.join("index.html"), wiki_parser::page::render(true))?;
+    fs::write(out.join("og.jpg"), OG)?;
+
+    // PWA plumbing: manifest, icons, and the versioned service worker.
+    fs::write(out.join("manifest.webmanifest"), MANIFEST)?;
+    for (name, bytes) in ICONS {
+        fs::write(out.join(name), bytes)?;
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    fs::write(out.join("sw.js"), SW.replace("{STAMP}", &stamp.to_string()))?;
+
+    // Crawler plumbing. One real page, so the sitemap is one URL; the data
+    // dirs are blocked to keep crawlers off tens of thousands of JSON shards.
+    fs::write(
+        out.join("robots.txt"),
+        "User-agent: *\nAllow: /\nDisallow: /shards/\nDisallow: /compass/\nDisallow: /daily/\nDisallow: /random/\n\nSitemap: https://wikigolf.app/sitemap.xml\n",
+    )?;
+    fs::write(
+        out.join("sitemap.xml"),
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n<url><loc>https://wikigolf.app/</loc></url>\n</urlset>\n",
+    )?;
+    // Cloudflare Pages serves /404.html for unknown paths automatically.
+    fs::write(out.join("404.html"), PAGE_404)?;
+
+    Ok(())
+}
+
+fn refresh_ui(out: &Path) -> Result<()> {
+    // Reject a wrong/empty output directory before writing any files.
+    let meta: serde_json::Value = serde_json::from_reader(
+        fs::File::open(out.join("meta.json"))
+            .context("--ui-only needs an existing export with meta.json")?,
+    )?;
+    anyhow::ensure!(
+        meta["articles"].as_u64().is_some_and(|n| n > 0)
+            && meta["shard_size"].as_u64().is_some_and(|n| n > 0)
+            && meta["day0"].as_u64().is_some()
+            && out.join("shards").is_dir()
+            && out.join("daily").is_dir(),
+        "--ui-only target is not a recognized static export"
+    );
+    write_shell(out)
+}
+
 fn main() -> Result<()> {
     let a = Args::parse();
+    if a.ui_only {
+        refresh_ui(&a.out)?;
+        eprintln!(
+            "UI refreshed in {}; graph data and puzzles unchanged",
+            a.out.display()
+        );
+        return Ok(());
+    }
     let t0 = std::time::Instant::now();
     eprintln!("loading game state from {}...", a.data.display());
     let game = Game::load(&a.data)?;
@@ -188,38 +249,7 @@ fn main() -> Result<()> {
     fs::create_dir_all(a.out.join("daily"))?;
 
     // ---- the page, the card, meta / regions / landmarks / map -------------
-    fs::write(
-        a.out.join("index.html"),
-        PAGE.replacen("<html lang=\"en\">", "<html lang=\"en\" data-static>", 1),
-    )?;
-    fs::write(a.out.join("og.jpg"), OG)?;
-
-    // PWA plumbing: manifest, icons, and the versioned service worker.
-    fs::write(a.out.join("manifest.webmanifest"), MANIFEST)?;
-    for (name, bytes) in ICONS {
-        fs::write(a.out.join(name), bytes)?;
-    }
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    fs::write(
-        a.out.join("sw.js"),
-        SW.replace("{STAMP}", &stamp.to_string()),
-    )?;
-
-    // Crawler plumbing. One real page, so the sitemap is one URL; the data
-    // dirs are blocked to keep crawlers off tens of thousands of JSON shards.
-    fs::write(
-        a.out.join("robots.txt"),
-        "User-agent: *\nAllow: /\nDisallow: /shards/\nDisallow: /compass/\nDisallow: /daily/\nDisallow: /random/\n\nSitemap: https://wikigolf.app/sitemap.xml\n",
-    )?;
-    fs::write(
-        a.out.join("sitemap.xml"),
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n<url><loc>https://wikigolf.app/</loc></url>\n</urlset>\n",
-    )?;
-    // Cloudflare Pages serves /404.html for unknown paths automatically.
-    fs::write(a.out.join("404.html"), PAGE_404)?;
+    write_shell(&a.out)?;
 
     let today = today_day();
     let today_number = today.saturating_sub(DAILY_EPOCH_DAY) + 1;
@@ -237,6 +267,7 @@ fn main() -> Result<()> {
     write_json(
         &a.out.join("meta.json"),
         &json!({
+            "dataset": game.dataset,
             "articles": n,
             "edges": g.forward.edges(),
             "shard_size": SHARD_SIZE,
@@ -596,4 +627,41 @@ fn write_json(path: &std::path::Path, v: &serde_json::Value) -> Result<u64> {
     serde_json::to_writer(&mut f, v)?;
     f.flush()?;
     Ok(fs::metadata(path)?.len())
+}
+
+#[cfg(test)]
+mod shell_tests {
+    use super::*;
+
+    #[test]
+    fn refresh_preserves_data_and_rejects_non_exports() {
+        let out = std::env::temp_dir().join(format!("wp-shell-{}", std::process::id()));
+        fs::create_dir_all(&out).unwrap();
+        fs::write(out.join("index.html"), "existing page").unwrap();
+        assert!(refresh_ui(&out).is_err());
+        assert_eq!(
+            fs::read_to_string(out.join("index.html")).unwrap(),
+            "existing page"
+        );
+        fs::create_dir_all(out.join("shards")).unwrap();
+        fs::create_dir_all(out.join("daily")).unwrap();
+        let metadata = br#"{"articles":3,"shard_size":896,"day0":20683,"dataset":"keep-me"}"#;
+        fs::write(out.join("meta.json"), metadata).unwrap();
+        for name in ["shards/0.json", "daily/1.json", "map.json"] {
+            fs::write(out.join(name), b"untouched data").unwrap();
+        }
+        refresh_ui(&out).unwrap();
+        assert_eq!(fs::read(out.join("meta.json")).unwrap(), metadata);
+        for name in ["shards/0.json", "daily/1.json", "map.json"] {
+            assert_eq!(fs::read(out.join(name)).unwrap(), b"untouched data");
+        }
+        let page = fs::read_to_string(out.join("index.html")).unwrap();
+        assert!(page.contains("<html lang=\"en\" data-static>"));
+        assert!(!page.contains("<!-- inline:"));
+        assert!(page.contains("function loadRaceLink"));
+        assert!(fs::read_to_string(out.join("sw.js"))
+            .unwrap()
+            .contains("wikigolf-"));
+        fs::remove_dir_all(out).unwrap();
+    }
 }

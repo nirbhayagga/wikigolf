@@ -63,4 +63,4 @@ ENV WIKIRACE_HOST=0.0.0.0 WIKIRACE_PORT=8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8080/api/meta || exit 1
 
-CMD ["sh", "-c", "exec serve --data /data --host ${WIKIRACE_HOST} --port ${WIKIRACE_PORT}"]
+CMD ["sh", "-c", "exec serve --data /data --state /state --host ${WIKIRACE_HOST} --port ${WIKIRACE_PORT}"]

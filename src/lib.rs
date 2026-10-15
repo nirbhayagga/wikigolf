@@ -21,3 +21,7 @@ pub mod ratelimit;
 pub mod runs;
 pub mod titles;
 pub mod wikitext;
+
+pub mod dataset;
+
+pub mod page;

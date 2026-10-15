@@ -114,7 +114,12 @@ fn main() -> Result<()> {
     }
 
     let out = a.out.unwrap_or_else(|| a.data.join(POOL_FILE));
-    let rows = out_pools.write(&out, graph.len(), graph.forward.edges())?;
+    let rows = out_pools.write(
+        &out,
+        graph.len(),
+        graph.forward.edges(),
+        &wiki_parser::dataset::fingerprint(&a.data)?,
+    )?;
     eprintln!("wrote {rows} rows to {}", out.display());
     eprintln!("  {}", out_pools.summary());
     Ok(())

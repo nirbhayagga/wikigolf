@@ -48,6 +48,10 @@ pub struct Run {
     pub number: Option<u64>,
     issued: Instant,
     submitted: bool,
+    owner: Option<String>,
+    active_since: Option<Instant>,
+    active_time: Duration,
+    finished_path: Option<Vec<u32>>,
     /// Compass charges left. Tracked on the server because the client cannot
     /// be trusted with a limit that is the whole point of the mechanic.
     compass_left: u8,
@@ -82,11 +86,15 @@ pub enum RunError {
     TooFast,
     Expired,
     NoCompassLeft,
+    InvalidClock,
 }
 
 impl RunError {
     pub fn message(&self, g: &Graph) -> String {
         match self {
+            RunError::InvalidClock => {
+                "race clock is not in the expected state; start or resume the race first".into()
+            }
             RunError::NoCompassLeft => "no compass charges left".into(),
             RunError::UnknownRun => "unknown or expired run".into(),
             RunError::AlreadySubmitted => "this run was already submitted".into(),
@@ -164,6 +172,39 @@ fn place(list: &mut Vec<Entry>, entry: Entry) {
     }
     list.sort_by(|a, b| a.clicks.cmp(&b.clicks).then(a.ms.cmp(&b.ms)));
     list.truncate(100);
+}
+
+fn validate_path(g: &Graph, run: &Run, path: &[u32]) -> Result<(), RunError> {
+    if path.iter().any(|&v| v as usize >= g.len()) {
+        return Err(RunError::InvalidClock);
+    }
+    if path.len() > MAX_PATH {
+        return Err(RunError::PathTooLong);
+    }
+    if path.first() != Some(&run.start) {
+        return Err(RunError::WrongStart);
+    }
+    if path.last() != Some(&run.goal) {
+        return Err(RunError::WrongGoal);
+    }
+
+    // Re-walk the route on our own graph. This is the whole point: a score
+    // is only accepted if the journey that produced it actually exists.
+    for pair in path.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        if !g.forward.neighbors(a).contains(&b) {
+            return Err(RunError::BrokenLink(a, b));
+        }
+    }
+    if let Some(limit) = run.ban_degree {
+        for &v in &path[1..path.len().saturating_sub(1)] {
+            if g.reverse.degree(v) > limit {
+                return Err(RunError::UsedBannedHub(v));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 impl Registry {
@@ -245,6 +286,10 @@ impl Registry {
                 number: run.number,
                 issued: Instant::now(),
                 submitted: false,
+                owner: None,
+                active_since: None,
+                active_time: Duration::ZERO,
+                finished_path: None,
                 compass_left: compass_charges(run.par),
             },
         );
@@ -255,13 +300,18 @@ impl Registry {
         self.runs.lock().unwrap().get(&id).cloned()
     }
 
-    /// Validate a claimed path against the graph and the issued run.
-    /// Spend one compass charge, returning the goal to measure toward and how
-    /// many charges remain.
-    ///
-    /// The charge is taken before the BFS runs, so a slow or failed lookup
-    /// still costs the player — otherwise a retry loop is free hints.
+    /// Check availability without spending; useful readings are charged after
+    /// computation. The final spending check is atomic, so concurrent requests
+    /// cannot obtain more useful readings than the remaining budget.
+    pub fn compass_status(&self, id: u64) -> Result<(u32, Option<usize>, u8), RunError> {
+        self.compass_charge(id, false)
+    }
+
     pub fn spend_compass(&self, id: u64) -> Result<(u32, Option<usize>, u8), RunError> {
+        self.compass_charge(id, true)
+    }
+
+    fn compass_charge(&self, id: u64, spend: bool) -> Result<(u32, Option<usize>, u8), RunError> {
         let mut runs = self.runs.lock().unwrap();
         let run = runs.get_mut(&id).ok_or(RunError::UnknownRun)?;
         if run.submitted {
@@ -273,7 +323,9 @@ impl Registry {
         if run.compass_left == 0 {
             return Err(RunError::NoCompassLeft);
         }
-        run.compass_left -= 1;
+        if spend {
+            run.compass_left -= 1;
+        }
         Ok((run.goal, run.ban_degree, run.compass_left))
     }
 
@@ -285,6 +337,63 @@ impl Registry {
         let runs = self.runs.lock().unwrap();
         let r = runs.get(&id)?;
         Some((r.start, r.goal, r.ban_degree, r.par))
+    }
+
+    /// Server stopwatch: ready time, pauses and the result screen are excluded.
+    /// Finish freezes both the validated route and its time before nickname entry.
+    pub fn clock(
+        &self,
+        g: &Graph,
+        id: u64,
+        action: &str,
+        path: &[u32],
+        player: &str,
+    ) -> Result<u64, RunError> {
+        let mut runs = self.runs.lock().unwrap();
+        let run = runs.get_mut(&id).ok_or(RunError::UnknownRun)?;
+        if run.issued.elapsed() > MAX_RUN {
+            return Err(RunError::Expired);
+        }
+        if run.submitted {
+            return Err(RunError::AlreadySubmitted);
+        }
+        if run.owner.as_deref().is_some_and(|p| p != player) {
+            return Err(RunError::InvalidClock);
+        }
+        match action {
+            "start" if run.owner.is_none() => {
+                run.owner = Some(player.to_string());
+                run.active_since = Some(Instant::now());
+            }
+            "resume"
+                if run.owner.is_some()
+                    && run.active_since.is_none()
+                    && run.finished_path.is_none() =>
+            {
+                run.active_since = Some(Instant::now());
+            }
+            "pause" if run.active_since.is_some() && run.finished_path.is_none() => {
+                run.active_time += run.active_since.take().unwrap().elapsed();
+            }
+            "finish" if run.finished_path.as_deref() == Some(path) => {} // safe retry
+            "finish" if run.active_since.is_some() => {
+                validate_path(g, run, path)?;
+                let elapsed = run.active_time + run.active_since.unwrap().elapsed();
+                if elapsed.as_millis()
+                    < (MIN_MS_BASE + MIN_MS_PER_CLICK * (path.len() - 1) as u64) as u128
+                {
+                    return Err(RunError::TooFast);
+                }
+                run.active_time = elapsed;
+                run.active_since = None;
+                run.finished_path = Some(path.to_vec());
+            }
+            _ => return Err(RunError::InvalidClock),
+        }
+        Ok(
+            (run.active_time + run.active_since.map(|t| t.elapsed()).unwrap_or_default())
+                .as_millis() as u64,
+        )
     }
 
     pub fn submit(
@@ -305,35 +414,14 @@ impl Registry {
             runs.remove(&id);
             return Err(RunError::Expired);
         }
-        if path.len() > MAX_PATH {
-            return Err(RunError::PathTooLong);
-        }
-        if path.first() != Some(&run.start) {
-            return Err(RunError::WrongStart);
-        }
-        if path.last() != Some(&run.goal) {
-            return Err(RunError::WrongGoal);
-        }
-
-        // Re-walk the route on our own graph. This is the whole point: a score
-        // is only accepted if the journey that produced it actually exists.
-        for pair in path.windows(2) {
-            let (a, b) = (pair[0], pair[1]);
-            if !g.forward.neighbors(a).contains(&b) {
-                return Err(RunError::BrokenLink(a, b));
-            }
-        }
-        if let Some(limit) = run.ban_degree {
-            for &v in &path[1..path.len().saturating_sub(1)] {
-                if g.reverse.degree(v) > limit {
-                    return Err(RunError::UsedBannedHub(v));
-                }
-            }
+        validate_path(g, run, path)?;
+        if run.owner.as_deref() != Some(player) || run.finished_path.as_deref() != Some(path) {
+            return Err(RunError::InvalidClock);
         }
 
         let clicks = path.len() - 1;
         let floor = MIN_MS_BASE + MIN_MS_PER_CLICK * clicks as u64;
-        let ms = elapsed.as_millis() as u64;
+        let ms = run.active_time.as_millis() as u64;
         if ms < floor {
             return Err(RunError::TooFast);
         }
@@ -379,8 +467,8 @@ impl Registry {
 
 fn board_key(number: Option<u64>, difficulty: &str) -> String {
     match number {
-        Some(n) => format!("daily:{n}:{difficulty}"),
-        None => format!("free:{difficulty}"),
+        Some(n) => format!("v2:daily:{n}:{difficulty}"),
+        None => format!("v2:free:{difficulty}"),
     }
 }
 
@@ -403,6 +491,66 @@ pub struct Accepted {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn timed_run(reg: &Registry) -> u64 {
+        reg.issue(RunSpec {
+            start: 0,
+            goal: 2,
+            ban_degree: None,
+            par: 2,
+            difficulty: "medium".into(),
+            number: Some(1),
+        })
+    }
+
+    #[test]
+    fn active_clock_excludes_ready_pause_and_post_finish_time() {
+        let g = crate::graph::tests_support::graph(3, &[(0, 1), (1, 2)]);
+        let reg = Registry::default();
+        let id = timed_run(&reg);
+        reg.runs.lock().unwrap().get_mut(&id).unwrap().issued =
+            Instant::now() - Duration::from_secs(100);
+        assert!(reg.clock(&g, id, "start", &[], "alice").unwrap() < 100);
+        reg.runs.lock().unwrap().get_mut(&id).unwrap().active_since =
+            Some(Instant::now() - Duration::from_secs(2));
+        let paused = reg.clock(&g, id, "pause", &[], "alice").unwrap();
+        assert!((2000..2100).contains(&paused));
+        assert_eq!(
+            reg.clock(&g, id, "resume", &[], "bob"),
+            Err(RunError::InvalidClock)
+        );
+        assert!(reg.clock(&g, id, "resume", &[], "alice").unwrap() < 2100);
+        let finished = reg.clock(&g, id, "finish", &[0, 1, 2], "alice").unwrap();
+        assert_eq!(
+            reg.clock(&g, id, "finish", &[0, 1, 2], "alice").unwrap(),
+            finished
+        );
+        let accepted = reg.submit(&g, id, &[0, 1, 2], "Alice", "alice").unwrap();
+        assert_eq!(accepted.ms, finished);
+    }
+
+    #[test]
+    fn finish_requires_legal_path_and_started_clock() {
+        let g = crate::graph::tests_support::graph(3, &[(0, 1), (1, 2)]);
+        let reg = Registry::default();
+        let id = timed_run(&reg);
+        assert_eq!(
+            reg.clock(&g, id, "finish", &[0, 1, 2], "alice"),
+            Err(RunError::InvalidClock)
+        );
+        reg.clock(&g, id, "start", &[], "alice").unwrap();
+        assert_eq!(
+            reg.clock(&g, id, "finish", &[0, 2], "alice"),
+            Err(RunError::BrokenLink(0, 2))
+        );
+        assert!(reg
+            .clock(&g, id, "finish", &[0, u32::MAX, 2], "alice")
+            .is_err());
+        assert_eq!(
+            reg.clock(&g, id, "finish", &[0, 1, 2], "alice"),
+            Err(RunError::TooFast)
+        );
+    }
 
     #[test]
     fn nicknames_are_bounded_and_stripped() {
@@ -481,6 +629,37 @@ mod tests {
 #[cfg(test)]
 mod compass_tests {
     use super::*;
+
+    #[test]
+    fn availability_is_free_and_concurrent_readings_share_one_budget() {
+        let registry = std::sync::Arc::new(Registry::default());
+        let id = registry.issue(RunSpec {
+            start: 0,
+            goal: 1,
+            ban_degree: None,
+            par: 3,
+            difficulty: "easy".into(),
+            number: None,
+        });
+        for _ in 0..10 {
+            assert_eq!(registry.compass_status(id), Ok((1, None, 1)));
+        }
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let registry = std::sync::Arc::clone(&registry);
+                std::thread::spawn(move || registry.spend_compass(id).is_ok())
+            })
+            .collect();
+        assert_eq!(
+            threads
+                .into_iter()
+                .filter_map(|t| t.join().ok())
+                .filter(|ok| *ok)
+                .count(),
+            1
+        );
+        assert_eq!(registry.compass_status(id), Err(RunError::NoCompassLeft));
+    }
 
     #[test]
     fn charges_scale_with_par_and_never_cover_every_move() {

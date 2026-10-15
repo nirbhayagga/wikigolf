@@ -367,6 +367,7 @@ pub fn playable_pool(
 }
 
 pub struct Game {
+    pub dataset: String,
     pub graph: Graph,
     pub layout: Option<Layout>,
     /// Articles worth using as puzzle endpoints, by id.
@@ -532,6 +533,7 @@ impl Game {
     /// search still works over every title, "NYC" just stops finding New
     /// York City.
     pub fn load_with(data_dir: &Path, alias_search: bool) -> Result<Game> {
+        let dataset = crate::dataset::fingerprint(data_dir)?;
         let graph = Graph::load(data_dir)?;
         let n_articles = graph.len();
         let layout = Layout::load(data_dir, graph.len())?;
@@ -621,12 +623,18 @@ impl Game {
 
         // Optional but never silently wrong: a missing pools file degrades to
         // rejection sampling, a stale one refuses to load (see pools.rs).
-        let pools = Pools::load(&data_dir.join(POOL_FILE), n_articles, graph.forward.edges())?;
+        let pools = Pools::load(
+            &data_dir.join(POOL_FILE),
+            n_articles,
+            graph.forward.edges(),
+            &dataset,
+        )?;
         if let Some(p) = &pools {
             eprintln!("  puzzle pools: {}", p.summary());
         }
 
         Ok(Game {
+            dataset,
             graph,
             layout,
             playable,

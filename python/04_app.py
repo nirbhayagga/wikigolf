@@ -33,6 +33,7 @@ import panel as pn
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import Paths, load_config  # noqa: E402
+from viewer_index import EdgeStore, GridIndex  # noqa: E402
 
 hv.extension("bokeh")
 pn.extension()
@@ -80,91 +81,6 @@ def build_categories(nodes, labels, max_categories=MAX_CATEGORIES):
     )
     return categories
 
-
-class EdgeStore:
-    """Both directions of the link graph, grouped for O(degree) lookup.
-
-    One stable argsort per direction: `order[offsets[v]:offsets[v+1]]` are the
-    edge rows whose src (resp. dst) is v. The permutations are int32 — the
-    edge count fits — which keeps the whole store at ~2 int32 arrays per
-    direction (~3.7 GB total at 231.7M edges) instead of the ~7.4 GB that
-    int64 argsort output would occupy.
-    """
-
-    def __init__(self, path, n):
-        tbl = pq.read_table(path, columns=["src", "dst"])
-        self.src = tbl.column("src").to_numpy().astype(np.int32, copy=False)
-        self.dst = tbl.column("dst").to_numpy().astype(np.int32, copy=False)
-        self.out_off, self.out_ord = self._group(self.src, n)
-        self.in_off, self.in_ord = self._group(self.dst, n)
-        print(f"   {len(self.src):,} edges indexed both ways")
-
-    @staticmethod
-    def _group(keys, n):
-        counts = np.bincount(keys, minlength=n)
-        offsets = np.zeros(n + 1, dtype=np.int64)
-        np.cumsum(counts, out=offsets[1:])
-        order = np.argsort(keys, kind="stable").astype(np.int32)
-        return offsets, order
-
-    def neighbors(self, v, direction):
-        """Endpoint ids on the far side of v's edges in one direction."""
-        if direction == "out":
-            rows = self.out_ord[self.out_off[v] : self.out_off[v + 1]]
-            return self.dst[rows]
-        rows = self.in_ord[self.in_off[v] : self.in_off[v + 1]]
-        return self.src[rows]
-
-
-class GridIndex:
-    """Uniform-grid nearest-point lookup, pure numpy.
-
-    scipy's KDTree would be the obvious tool, but the viewer image
-    deliberately excludes scipy (see the Dockerfile) — and a 1024x1024
-    bucket grid over 7.2M points answers a click in well under a
-    millisecond anyway.
-    """
-
-    BINS = 1024
-
-    def __init__(self, x, y):
-        # The stragglers outside the giant component may carry NaN positions;
-        # they can never be clicked, so they are simply not indexed.
-        ok = np.isfinite(x) & np.isfinite(y)
-        self.ids = np.flatnonzero(ok).astype(np.int32)
-        self.x, self.y = x[self.ids], y[self.ids]
-        self.x0, self.y0 = float(self.x.min()), float(self.y.min())
-        self.sx = (float(self.x.max()) - self.x0) / self.BINS or 1.0
-        self.sy = (float(self.y.max()) - self.y0) / self.BINS or 1.0
-        cell = self._cell(self.x, self.y)
-        self.off, self.order = EdgeStore._group(cell, self.BINS * self.BINS)
-
-    def _cell(self, x, y):
-        cx = np.clip(((x - self.x0) / self.sx).astype(np.int64), 0, self.BINS - 1)
-        cy = np.clip(((y - self.y0) / self.sy).astype(np.int64), 0, self.BINS - 1)
-        return (cy * self.BINS + cx).astype(np.int32)
-
-    def nearest(self, x, y):
-        cx = int(np.clip((x - self.x0) / self.sx, 0, self.BINS - 1))
-        cy = int(np.clip((y - self.y0) / self.sy, 0, self.BINS - 1))
-        for radius in (1, 4, 16):
-            cand = []
-            for gy in range(max(0, cy - radius), min(self.BINS, cy + radius + 1)):
-                a = gy * self.BINS + max(0, cx - radius)
-                b = gy * self.BINS + min(self.BINS - 1, cx + radius)
-                cand.append(self.order[self.off[a] : self.off[b + 1]])
-            idx = np.concatenate(cand) if cand else np.array([], dtype=np.int32)
-            if len(idx):
-                d = (self.x[idx] - x) ** 2 + (self.y[idx] - y) ** 2
-                # idx addresses the compacted arrays; map back to article ids.
-                return int(self.ids[idx[int(np.argmin(d))]])
-        # A click in open ocean: brute-force the lot (~30 ms at 7.2M points).
-        # Returning nothing would make the click feel broken; returning the
-        # honest nearest point never does.
-        if len(self.x) == 0:
-            return None
-        d = (self.x - x) ** 2 + (self.y - y) ** 2
-        return int(self.ids[int(np.argmin(d))])
 
 
 class Search:
@@ -307,12 +223,20 @@ def build_app():
             nbr,
         )
 
-    def selection(x, y, mode):
+    selected_by_search = None
+
+    def selection(x, y, mode, region):
+        nonlocal selected_by_search
         seg_out = seg_in = hv.Segments([], kdims=["x0", "y0", "x1", "y1"])
         marker = hv.Points([])
-        v = grid.nearest(x, y) if (x is not None and y is not None) else None
+        allowed = None if region in (None, "All") else (nodes["label"].to_numpy() == region)
+        v = selected_by_search
+        selected_by_search = None
+        if v is None and x is not None and y is not None:
+            v = grid.nearest(x, y, allowed)
         if v is not None:
-            out_n = in_n = 0
+            out_n = len(edges.neighbors(v, "out")) if edges is not None else None
+            in_n = len(edges.neighbors(v, "in")) if edges is not None else int(nodes.iloc[v]["degree"])
             sample = np.array([], dtype=np.int32)
             if edges is not None:
                 if mode in ("Out", "Both"):
@@ -326,13 +250,13 @@ def build_app():
             names = ", ".join(str(titles_of[w]) for w in sample[:10])
             trunc = (
                 " *(a sample is drawn — hubs would be solid ink)*"
-                if max(out_n, in_n) > MAX_DRAWN
+                if max(out_n or 0, in_n or 0) > MAX_DRAWN
                 else ""
             )
             info.object = (
                 f"### {titles_of[v]}\n"
                 f"*{row['label']}* · PR {row['pagerank']:.2e}\n\n"
-                f"**{out_n:,}** outgoing · **{in_n:,}** incoming{trunc}\n\n"
+                f"**{format(out_n, chr(44)) if out_n is not None else 'unavailable'}** outgoing · **{in_n:,}** incoming{trunc}\n\n"
                 + (f"Links to: {names}…" if names else "")
                 + ("" if edges is not None else "\n\n*(edges.parquet absent — counts only)*")
             )
@@ -342,7 +266,7 @@ def build_app():
             * marker.opts(size=11, color="white", fill_alpha=0, line_width=2)
         )
 
-    sel_dmap = hv.DynamicMap(selection, streams=[tap, dir_stream])
+    sel_dmap = hv.DynamicMap(selection, streams=[tap, dir_stream, region_stream])
 
     # inspect_points takes a single element (the datashaded plot) and resolves
     # the original points through its pipeline; hover contents come from the
@@ -392,11 +316,14 @@ def build_app():
         }
 
     def do_mark(*_):
+        nonlocal selected_by_search
         v = hits.value
         if v is None:
             return
         # Selecting a hit is a synthetic click at the article's position:
         # same stream, same overlay, same info pane as a real tap.
+        isolate.value = "All"
+        selected_by_search = v
         tap.event(x=float(coords_x[v]), y=float(coords_y[v]))
 
     button.on_click(do_search)

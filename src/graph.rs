@@ -588,6 +588,17 @@ impl PathFinder {
     /// The returned vector is `n` bytes — about 7 MB at enwiki scale — so it
     /// is worth caching per goal and sharing across players on the daily.
     pub fn distances_to(&mut self, g: &Graph, goal: u32, max_depth: u8) -> Vec<u8> {
+        self.distances_to_avoiding(g, goal, max_depth, &|_| false)
+    }
+
+    /// Reverse BFS under the same hub restrictions as the puzzle.
+    pub fn distances_to_avoiding(
+        &mut self,
+        g: &Graph,
+        goal: u32,
+        max_depth: u8,
+        banned: &impl Fn(u32) -> bool,
+    ) -> Vec<u8> {
         let n = g.len();
         let mut dist = vec![UNSEEN; n];
         if (goal as usize) < n {
@@ -599,7 +610,7 @@ impl PathFinder {
                 let mut next = Vec::new();
                 for &v in &frontier {
                     for &w in g.reverse.neighbors(v) {
-                        if dist[w as usize] == UNSEEN {
+                        if dist[w as usize] == UNSEEN && !banned(w) {
                             dist[w as usize] = depth;
                             next.push(w);
                         }
@@ -979,6 +990,17 @@ mod counting_tests {
         assert_eq!(d[1], 1, "one click away");
         assert_eq!(d[0], 2, "two clicks away");
         assert_eq!(d[3], UNSEEN, "cannot reach the goal at all");
+    }
+
+    #[test]
+    fn compass_avoids_a_blocked_intermediate_hub() {
+        let g = graph(5, &[(0, 1), (1, 3), (0, 2), (2, 4), (4, 3)]);
+        let mut pf = PathFinder::new(g.len());
+        assert_eq!(pf.distances_to(&g, 3, 6)[0], 2);
+        let d = pf.distances_to_avoiding(&g, 3, 6, &|v| v == 1);
+        assert_eq!(d[0], 3);
+        assert_eq!(d[1], UNSEEN);
+        assert_eq!(d[3], 0);
     }
 
     #[test]

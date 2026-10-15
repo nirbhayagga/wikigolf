@@ -102,39 +102,7 @@ impl Pools {
     /// (many-routes, forgiving) half. Deterministic in the Rng, so the
     /// seeded daily stays a pure function of its seed.
     pub fn pick(&self, d: Difficulty, rng: &mut Rng) -> Option<(u32, u32)> {
-        let di = diff_index(d);
-        let total: u64 = (0..PAR_SPAN)
-            .map(|i| {
-                if self.buckets[di][i].is_empty() {
-                    0
-                } else {
-                    WEIGHTS[di][i]
-                }
-            })
-            .sum();
-        if total == 0 {
-            return None;
-        }
-        let mut r = rng.next_u64() % total;
-        for (b, &weight) in self.buckets[di].iter().zip(&WEIGHTS[di]) {
-            if b.is_empty() {
-                continue;
-            }
-            if r < weight {
-                let (lo, hi) = match d {
-                    // Halves overlap at the midpoint so a 1-element bucket
-                    // serves every difficulty.
-                    Difficulty::Easy => (b.len() / 2, b.len()),
-                    Difficulty::Medium => (0, b.len()),
-                    Difficulty::Hard => (0, b.len().div_ceil(2)),
-                };
-                let k = lo + (rng.next_u64() % (hi - lo) as u64) as usize;
-                let (s, t, _) = b[k];
-                return Some((s, t));
-            }
-            r -= weight;
-        }
-        None
+        self.pick_full(d, rng).map(|(s, t, _, _)| (s, t))
     }
 
     /// Like `pick`, but returning the full record — the static exporter
@@ -161,7 +129,13 @@ impl Pools {
                 continue;
             }
             if r < weight {
-                let (s, t, routes) = b[(rng.next_u64() % b.len() as u64) as usize];
+                let (lo, hi) = match d {
+                    Difficulty::Easy => (b.len() / 2, b.len()),
+                    Difficulty::Medium => (0, b.len()),
+                    Difficulty::Hard => (0, b.len().div_ceil(2)),
+                };
+                let k = lo + (rng.next_u64() % (hi - lo) as u64) as usize;
+                let (s, t, routes) = b[k];
                 return Some((s, t, min_len + off, routes));
             }
             r -= weight;
@@ -197,7 +171,13 @@ impl Pools {
             .join("  ")
     }
 
-    pub fn write(&self, path: &Path, n_articles: usize, n_edges: usize) -> Result<u64> {
+    pub fn write(
+        &self,
+        path: &Path,
+        n_articles: usize,
+        n_edges: usize,
+        dataset: &str,
+    ) -> Result<u64> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("difficulty", DataType::UInt8, false),
             Field::new("par", DataType::UInt8, false),
@@ -207,6 +187,7 @@ impl Pools {
         ]));
         let props = WriterProperties::builder()
             .set_key_value_metadata(Some(vec![
+                parquet::file::metadata::KeyValue::new("wiki_dataset".into(), dataset.to_string()),
                 parquet::file::metadata::KeyValue::new(
                     "wiki_articles".to_string(),
                     n_articles.to_string(),
@@ -252,7 +233,12 @@ impl Pools {
     /// Missing file is not an error — pools are an enhancement. A file whose
     /// fingerprint disagrees with the loaded graph IS an error, and a loud
     /// one: after a new dump every id means a different article.
-    pub fn load(path: &Path, n_articles: usize, n_edges: usize) -> Result<Option<Pools>> {
+    pub fn load(
+        path: &Path,
+        n_articles: usize,
+        n_edges: usize,
+        dataset: &str,
+    ) -> Result<Option<Pools>> {
         if !path.exists() {
             return Ok(None);
         }
@@ -265,6 +251,11 @@ impl Pools {
             .key_value_metadata()
             .cloned()
             .unwrap_or_default();
+        match kv.iter().find(|e| e.key == "wiki_dataset").and_then(|e| e.value.as_deref()) {
+            Some(stored) if stored != dataset => bail!("pools content fingerprint disagrees with the graph; regenerate pools"),
+            None => eprintln!("warning: legacy pools have count-only validation; regenerate to bind them to this dataset"),
+            _ => {},
+        }
         let get = |k: &str| -> Option<u64> {
             kv.iter()
                 .find(|e| e.key == k)
@@ -632,18 +623,19 @@ mod tests {
         let mut p = Pools::empty();
         p.set(Difficulty::Easy, 0, vec![(1, 2, 9), (3, 4, 1)]);
         p.set(Difficulty::Hard, 1, vec![(5, 6, 3)]);
-        p.write(&path, 100, 999).unwrap();
+        p.write(&path, 100, 999, "dataset-a").unwrap();
 
-        let loaded = Pools::load(&path, 100, 999).unwrap().unwrap();
+        let loaded = Pools::load(&path, 100, 999, "dataset-a").unwrap().unwrap();
         // set() sorts by route count, and load re-sorts the same way.
         assert_eq!(loaded.buckets[0][0], vec![(3, 4, 1), (1, 2, 9)]);
         assert_eq!(loaded.buckets[2][1], vec![(5, 6, 3)]);
 
         // Same file against a different graph must refuse, not degrade.
-        assert!(Pools::load(&path, 101, 999).is_err());
-        assert!(Pools::load(&path, 100, 1000).is_err());
+        assert!(Pools::load(&path, 100, 999, "dataset-b").is_err());
+        assert!(Pools::load(&path, 101, 999, "dataset-a").is_err());
+        assert!(Pools::load(&path, 100, 1000, "dataset-a").is_err());
         // A missing file is simply absent.
-        assert!(Pools::load(&dir.join("nope.parquet"), 1, 1)
+        assert!(Pools::load(&dir.join("nope.parquet"), 1, 1, "dataset-a")
             .unwrap()
             .is_none());
 
@@ -662,6 +654,28 @@ mod tests {
             // few-routes half.
             assert_eq!(p.pick(Difficulty::Easy, &mut rng), Some((1, 2)));
             assert_eq!(p.pick(Difficulty::Hard, &mut rng), Some((3, 4)));
+        }
+        let mut exported = Rng::new(9);
+        for _ in 0..20 {
+            assert_eq!(
+                p.pick_full(Difficulty::Easy, &mut exported),
+                Some((1, 2, 3, 50))
+            );
+            assert_eq!(
+                p.pick_full(Difficulty::Hard, &mut exported),
+                Some((3, 4, 4, 1))
+            );
+        }
+        // Live and exported draws must consume the same RNG sequence.
+        for d in [Difficulty::Easy, Difficulty::Medium, Difficulty::Hard] {
+            let mut live = Rng::new(101);
+            let mut exported = Rng::new(101);
+            for _ in 0..50 {
+                assert_eq!(
+                    p.pick(d, &mut live),
+                    p.pick_full(d, &mut exported).map(|(s, t, _, _)| (s, t))
+                );
+            }
         }
         // Determinism: same seed, same draw.
         let mut a = Rng::new(7);

@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir \
     datashader==0.19.* colorcet==3.* \
     pyyaml==6.* Pillow==11.* tqdm==4.*
 
-COPY python/common.py .
+COPY python/common.py python/viewer_index.py .
 COPY python/04_app.py .
 COPY python/05_export_png.py .
 COPY config.yaml .
@@ -35,4 +35,4 @@ CMD panel serve 04_app.py \
     --address 0.0.0.0 \
     --port 5006 \
     --allow-websocket-origin "$WEBSOCKET_ORIGIN" \
-    --num-procs 2
+    --num-procs 1

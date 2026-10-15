@@ -7,6 +7,42 @@ plays wiki-race on the same graph. Live as **[wikigolf.app](https://wikigolf.app
 
 Issues and pull requests are welcome.
 
+The game interface puts the daily race first. Practice and three-hole rounds
+sit alongside it; **Explore** opens the optional topic/map views. The map is
+an illustration of article relationships, not a measure of clicks to the goal.
+Practice prefers fresh endpoint combinations, and hints keep their charge
+when no playable option has a measured distance.
+
+To preview current UI sources without rebuilding the Wikipedia export:
+
+```bash
+python3 tools/preview.py --data static_site --port 8765
+# Or omit --data for a tiny synthetic fixture; visit http://127.0.0.1:8765.
+```
+
+The preview only serves local files and disables service-worker registration.
+For browser regression tests, run `cd e2e && npm ci && npx playwright install chromium && npm test`.
+The default suite tests current sources against the synthetic fixture.
+Set `BASE_URL` explicitly to run the separate deployed-site smoke tests.
+
+To apply UI changes to an existing static export without loading the graph or
+regenerating its data:
+
+```bash
+cargo build --release --bin static_export
+./target/release/static_export --ui-only --out static_site
+```
+
+This updates the page, icons, metadata for browsers/crawlers, and service
+worker. It preserves the graph metadata, shards, puzzle files and map data.
+It does not deploy the site.
+
+To audit the exported random pools and check a deterministic 20-race sample
+against the article shards, run `python3 tools/audit_puzzles.py`. This writes a
+local HTML report and JSON results under `reports/`, including repetition,
+pageview-based review flags, route checks, and an editorial showcase shortlist.
+It does not alter puzzles or establish human completion rates.
+
 Everything runs on CPU. There is no working GPU path — see
 [Layout](#layout-is-cpu-sfdp) for why.
 
@@ -394,6 +430,7 @@ and igraph for layout and communities, Datashader for rendering.
 
 ## License
 
-[AGPL-3.0-or-later](LICENSE). Run it, fork it, learn from it; if you host a
-modified version as a service, its users get the source too. The
-Wikipedia-derived data is CC BY-SA and is not part of this repository.
+[MIT](LICENSE) for the original project code. You may use, modify, and
+redistribute it, including commercially, with the license notice retained.
+Wikipedia-derived content is separately licensed under CC BY-SA and is not
+part of this repository. Third-party dependencies retain their own licenses.

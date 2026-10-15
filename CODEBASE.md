@@ -217,12 +217,124 @@ so ids are stable across re-parses of the same dump.*
 
 | File | Contents |
 |---|---|
-| `leaderboard.jsonl` | Append-only accepted runs. |
+| `<dataset-sha256>/leaderboard.jsonl` | Append-only accepted runs for this exact graph. Boards use the `v2:` active-clock version. Legacy root-level logs are preserved but not mixed into these rankings. |
 | `.wiki-race-secret` | HMAC key behind the identity cookie. Losing it logs every player out permanently. |
 | `analytics.jsonl` | One JSON delta line per hour: per-endpoint counters plus hashed-IP daily uniques. Capacity planning, not accounting — losable. |
 
-Both live in `--state`, which **must not** be the data directory — deployments
+These live under `--state`, which **must not** be the data directory — deployments
 mount that read-only and the process dies at startup otherwise.
+
+### Game interface and correctness updates (October 2026)
+
+`page.rs` embeds `static/index.html` and its CSS/JavaScript modules into one
+self-contained page for both live and static editions. `game.js` handles play;
+`data.js` adapts the static export; `race-link.js` encodes puzzle identity;
+`map.js` draws the optional explorer; `experience.js` handles dialogs and saved
+progress; `reader-duels.js` contains the reader and multiplayer controls.
+
+The race occupies the main screen. Explore opens community cards, the sampled
+point map with a region filter, or the current article's outgoing-link list.
+The existing SFDP positions are unchanged. Canvas animation stops when the
+view settles or closes. Paused links are inert, dialogs manage keyboard focus,
+and saved progress is validated before resuming (live restores are practice).
+
+The map fits the displayed sample rather than the full graph's bounds; Fit
+also respects the selected region. Community cards use a prominent article
+as their heading and explicitly identify their inferred category as an
+automatic label. A failed map request can be retried without restarting the
+race. The explorer uses content-sized header rows on narrow screens.
+
+Challenge URLs include the dataset, endpoints/rules, or daily/round number.
+Static shared pairs must exist in the exported pools; failure is explicit,
+never a silent random replacement. Old exports fall back to a legacy identity
+based on counts and epoch, which cannot detect every same-size dataset change.
+Future dailies are blocked by the client date; static files remain inspectable.
+
+`dataset.rs` hashes titles and edges with streaming SHA-256 at load time.
+New pools record that identity; mismatches fail. Legacy pools without a hash
+warn and retain their previous count checks. Python pipeline cache fingerprints
+are unchanged. The extra sequential file read has not been benchmarked at
+full English Wikipedia scale.
+
+`POST /api/clock` starts, pauses, resumes and finishes a player-bound live run.
+Finish validates and freezes the route and active duration before score entry;
+submit must match. This aligns timing with the UI but is not strong anti-cheat:
+clients can still inspect graph data and control pause requests. Static races
+are local only. Live compass BFS now excludes banned intermediate hubs and
+caches by goal plus ban threshold. Static compass data remains unrestricted,
+so distances are labelled lower bounds when hubs are excluded. Distribution
+copy explicitly describes the retained best scores (at most 100 per board).
+
+`viewer_index.py` holds the NumPy nearest-point and edge indexes. Selection
+checks the active region, searches exactly when the grid cannot prove a nearest
+candidate, and preserves the identity of search hits. Degree counts are not
+confused with the chosen display direction. The viewer image uses one worker
+to avoid duplicating its large edge index; full-scale RSS has not been remeasured.
+
+`tools/preview.py` serves current UI with an existing export or the committed
+synthetic `e2e/fixtures` dataset. Default Playwright tests exercise current
+sources locally; `BASE_URL` selects production monitoring. CI runs the local
+suite on changes and deployed-site checks on its schedule. No full export or
+layout recomputation is required for the fixture tests.
+
+`static_export --ui-only --out static_site` validates an existing export, then
+refreshes only `index.html`, the share card, manifest/icons, `404.html`, crawler
+files and the versioned service worker. It does not load the graph and leaves
+`meta.json`, shards, dailies, random pools and compass/map data untouched. The
+service-worker cache rotates as on a full export, so returning clients fetch
+data again. This command creates local output; deployment remains separate.
+
+Original project code is now MIT-licensed (`LICENSE`, Cargo package metadata
+and README agree). Wikipedia-derived content and dependencies retain their
+separate licenses.
+
+### Puzzle-pool quality audit (October 2026)
+
+`tools/audit_puzzles.py --site static_site` audits all random-pool rows and
+checks a deterministic mixed set of 20 races against their exported article
+shards. Outputs are local `reports/puzzle-audit.html` and `.json`. Route checks
+cover IDs/titles, actual links, banned intermediate hubs, disambiguation
+endpoints and baked path length. They do not independently recompute shortest
+paths or optimal-route counts. Pageviews are explicitly a familiarity proxy,
+not an exclusion rule; the editorial shortlist is not human playtest evidence.
+
+The existing 800-row pools have 6/3/6 duplicate pairs (easy/medium/hard).
+162/174/315 races respectively contain an endpoint below 1,000 exported monthly
+views; 95/93/155 endpoint occurrences lack descriptions. The hard pool repeats
+Scaritinae 31 times. All 2,400 baked paths pass structural checks; all 20 sampled
+routes pass the deeper checks across 90 exported shards. This sample combines
+showcase candidates, low-view/repeated endpoints and seeded spot checks, so it
+is not statistically representative.
+
+The auditor also decodes each reviewed goal's compass file and counts measured
+legal opening choices. In 11 of these 20 races, no legal first choice has a
+numeric distance at the exported depth. This does not mean the route is
+unreachable; the hint simply cannot distinguish those options at that point.
+Hub-banned races use unrestricted static distances, hence lower bounds.
+
+The audit found that `Pools::pick_full` (static export) drew from a whole par
+bucket while `pick` (live) applied the intended easy/high-route and hard/low-route
+halves. Both now use the same implementation and RNG sequence, with regression
+coverage. Live/daily selection keeps its prior algorithm; future random exports
+change. Existing static pools and published daily puzzles were not regenerated.
+Static practice now uses `puzzle-choice.js`: duplicate pair rows get one entry
+in the draw, pairs from the last 60 draws are avoided when possible, and among
+those candidates it prefers endpoints least used in the last six practice
+races. Pair history is per difficulty, endpoint history spans difficulties,
+and both are scoped to the dataset. Exhausted or small pools fall back to the
+least repetitive available option. Shared pairs, daily and round selection
+bypass this policy. Export-level endpoint caps, unique-pair export sampling
+and human playtesting remain follow-up work.
+
+Both static and live compass responses now include `charged`. When every
+legal option has an unknown distance (or there are no legal options), the
+reading is free. Numeric readings on blocked hubs alone do not count. The
+UI says the hint was saved and enables it again at the next article. Live
+availability is checked before computation and useful readings are charged
+atomically afterwards; concurrent requests cannot exceed the budget. A lost
+response after a useful server reading can still cost a charge. The static
+adapter rechecks its budget after asynchronous loads. Live requests reject
+out-of-range article IDs before looking up adjacency.
 
 ---
 
@@ -288,4 +400,3 @@ headroom on a 6 GB box.
   cannot fail the build — it ships. Two tests in `bin/serve.rs` guard against
   that after a slice-based edit once silently deleted the whole custom-race
   picker.
-

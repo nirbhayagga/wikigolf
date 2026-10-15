@@ -45,6 +45,9 @@ cufile.log
 # scale; deployed with wrangler, never committed.
 /static_site/
 
+# Generated local audits; the reproducible audit tools are tracked.
+/reports/
+
 # e2e (Playwright)
 /e2e/node_modules/
 /e2e/test-results/
@@ -54,3 +57,5 @@ cufile.log
 !/lighthouserc.json
 !/e2e/package.json
 !/e2e/package-lock.json
+!/e2e/fixtures/**/*.json
+!/e2e/fixtures/*.json

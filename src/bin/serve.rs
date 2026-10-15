@@ -83,6 +83,8 @@ struct Args {
 /// pooled rather than allocated per request. Searches are CPU-bound too, so
 /// every handler that touches the graph runs on the blocking pool — holding an
 /// async worker for 40 ms would stall unrelated requests.
+type CompassEntry = ((u32, Option<usize>), Arc<Vec<u8>>);
+
 struct App {
     game: Game,
     finders: Mutex<Vec<PathFinder>>,
@@ -102,7 +104,7 @@ struct App {
     /// Distance-to-goal maps, keyed by goal. One is ~7 MB at enwiki scale and
     /// costs a full reverse BFS, so they are kept rather than recomputed —
     /// and everyone racing the daily shares a single entry.
-    compass: Mutex<Vec<(u32, Arc<Vec<u8>>)>>,
+    compass: Mutex<Vec<CompassEntry>>,
 }
 
 /// How many goal maps to keep. Each is one byte per article, so this bounds
@@ -392,6 +394,9 @@ fn article_ref_banned(g: &Game, id: u32, banned: bool) -> ArticleRef {
 
 #[derive(Serialize)]
 struct Meta {
+    day0: u64,
+    today_number: u64,
+    dataset: String,
     articles: usize,
     edges: usize,
     has_map: bool,
@@ -590,7 +595,7 @@ async fn og_image() -> impl IntoResponse {
 async fn index() -> impl IntoResponse {
     (
         [(header::CACHE_CONTROL, "public, max-age=300")],
-        Html(include_str!("../../static/index.html")),
+        Html(wiki_parser::page::render(false)),
     )
 }
 
@@ -645,6 +650,9 @@ async fn meta(State(s): State<Shared>) -> Json<Meta> {
         ]
     });
     Json(Meta {
+        day0: DAILY_EPOCH_DAY,
+        today_number: today_day().saturating_sub(DAILY_EPOCH_DAY) + 1,
+        dataset: s.game.dataset.clone(),
         articles: s.game.graph.len(),
         edges: s.game.graph.forward.edges(),
         has_map: s.game.layout.is_some(),
@@ -920,6 +928,29 @@ fn issue(
     }
 }
 
+#[derive(Deserialize)]
+struct ClockRequest {
+    #[serde(deserialize_with = "de_run")]
+    run: u64,
+    action: String,
+    #[serde(default)]
+    path: Vec<u32>,
+}
+
+async fn run_clock(
+    State(s): State<Shared>,
+    axum::Extension(Player(player)): axum::Extension<Player>,
+    Json(req): Json<ClockRequest>,
+) -> Response {
+    match s
+        .runs
+        .clock(&s.game.graph, req.run, &req.action, &req.path, &player)
+    {
+        Ok(ms) => Json(serde_json::json!({"ms": ms})).into_response(),
+        Err(e) => err(e.message(&s.game.graph)).into_response(),
+    }
+}
+
 async fn submit(
     State(s): State<Shared>,
     axum::Extension(Player(player)): axum::Extension<Player>,
@@ -1014,7 +1045,10 @@ struct CompassRequest {
 /// over guessing. These numbers are the real graph distance, which is why they
 /// are rationed: shown for free on every article they would solve the game.
 async fn compass(State(s): State<Shared>, Json(req): Json<CompassRequest>) -> impl IntoResponse {
-    let (goal, ban, left) = match s.runs.spend_compass(req.run) {
+    if req.from as usize >= s.game.graph.len() {
+        return err("no such article id").into_response();
+    }
+    let (goal, ban, _) = match s.runs.compass_status(req.run) {
         Ok(v) => v,
         Err(e) => return err(e.message(&s.game.graph)).into_response(),
     };
@@ -1024,17 +1058,20 @@ async fn compass(State(s): State<Shared>, Json(req): Json<CompassRequest>) -> im
             let cache = s.compass.lock().unwrap();
             cache
                 .iter()
-                .find(|(g, _)| *g == goal)
+                .find(|(g, _)| *g == (goal, ban))
                 .map(|(_, d)| Arc::clone(d))
         };
         let dist = match cached {
             Some(d) => d,
             None => {
-                let d =
-                    Arc::new(s.with_finder(|g, pf| pf.distances_to(&g.graph, goal, COMPASS_DEPTH)));
+                let d = Arc::new(s.with_finder(|g, pf| {
+                    pf.distances_to_avoiding(&g.graph, goal, COMPASS_DEPTH, &|v| {
+                        ban.is_some_and(|limit| g.graph.reverse.degree(v) > limit)
+                    })
+                }));
                 let mut cache = s.compass.lock().unwrap();
-                if !cache.iter().any(|(g, _)| *g == goal) {
-                    cache.push((goal, Arc::clone(&d)));
+                if !cache.iter().any(|(g, _)| *g == (goal, ban)) {
+                    cache.push(((goal, ban), Arc::clone(&d)));
                     if cache.len() > COMPASS_CACHE {
                         cache.remove(0);
                     }
@@ -1063,12 +1100,23 @@ async fn compass(State(s): State<Shared>, Json(req): Json<CompassRequest>) -> im
                 })
             })
             .collect();
-        serde_json::json!({ "charges_left": left, "links": links })
+        let useful = links
+            .iter()
+            .any(|l| l["banned"] == false && !l["dist"].is_null());
+        let (_, _, left) = if useful {
+            s.runs.spend_compass(req.run)
+        } else {
+            s.runs.compass_status(req.run)
+        }
+        .map_err(|e| e.message(&s.game.graph))?;
+        Ok::<_, String>(serde_json::json!({ "charges_left": left, "links": links,
+            "exact": true, "charged": useful, "depth": COMPASS_DEPTH }))
     })
     .await;
 
     match out {
-        Ok(v) => Json(v).into_response(),
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(message)) => err(&message).into_response(),
         Err(_) => err("compass failed").into_response(),
     }
 }
@@ -1157,7 +1205,7 @@ async fn dist(
     for e in &entries {
         *hist.entry(e.clicks).or_default() += 1;
     }
-    Json(serde_json::json!({ "total": entries.len(), "hist": hist })).into_response()
+    Json(serde_json::json!({ "total": entries.len(), "hist": hist, "sample": "best_scores", "limit": 100 })).into_response()
 }
 
 /// The daily round: nine holes at a designed par profile, the same course
@@ -1461,10 +1509,12 @@ async fn serve() -> Result<()> {
         state_dir.display()
     );
 
+    let game_dataset = game.dataset.clone();
+    std::fs::create_dir_all(state_dir.join(&game_dataset))?;
     let state = Arc::new(App {
         game,
         finders: Mutex::new(Vec::new()),
-        runs: Registry::open(&state_dir)?,
+        runs: Registry::open(&state_dir.join(&game_dataset))?,
         rl_read: RateLimiter::new(READ_BURST, READ_PER_SEC),
         rl_heavy: RateLimiter::new(HEAVY_BURST, HEAVY_PER_SEC),
         trust_proxy: args.trust_proxy,
@@ -1519,12 +1569,15 @@ async fn serve() -> Result<()> {
             let seed = day.wrapping_mul(0x9E37_79B9_7F4A_7C15)
                 ^ (Difficulty::Medium as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
             if let Some(p) = puzzle_from_seed(&app, Difficulty::Medium, seed, None) {
-                let dist = Arc::new(
-                    app.with_finder(|g, pf| pf.distances_to(&g.graph, p.goal, COMPASS_DEPTH)),
-                );
+                let dist = Arc::new(app.with_finder(|g, pf| {
+                    pf.distances_to_avoiding(&g.graph, p.goal, COMPASS_DEPTH, &|v| {
+                        p.ban_degree
+                            .is_some_and(|limit| g.graph.reverse.degree(v) > limit)
+                    })
+                }));
                 let mut cache = app.compass.lock().unwrap();
-                if !cache.iter().any(|(g, _)| *g == p.goal) {
-                    cache.push((p.goal, dist));
+                if !cache.iter().any(|(g, _)| *g == (p.goal, p.ban_degree)) {
+                    cache.push(((p.goal, p.ban_degree), dist));
                 }
             }
         });
@@ -1570,6 +1623,7 @@ async fn serve() -> Result<()> {
         .route("/api/landmarks", get(landmarks))
         .route("/api/hubs", get(hubs))
         .route("/api/submit", post(submit))
+        .route("/api/clock", post(run_clock))
         .route("/api/leaderboard", get(leaderboard))
         .route("/api/dist", get(dist))
         .route("/api/course", get(course))
@@ -1654,7 +1708,7 @@ mod page_tests {
     /// the page does not work without.
     #[test]
     fn page_keeps_its_handlers() {
-        let page = include_str!("../../static/index.html");
+        let page = wiki_parser::page::render(false);
         for needle in [
             "function attachPicker",
             "attachPicker('cfrom'",
@@ -1705,7 +1759,7 @@ mod page_tests {
     /// Every id the script reaches for with $() must exist in the markup.
     #[test]
     fn every_referenced_id_exists() {
-        let page = include_str!("../../static/index.html");
+        let page = wiki_parser::page::render(false);
         let ids: Vec<&str> = page
             .match_indices("id=\"")
             .map(|(i, _)| {
