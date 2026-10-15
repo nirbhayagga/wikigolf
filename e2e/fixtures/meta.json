@@ -1,0 +1,1 @@
+{"dataset": "fixture-v1", "articles": 8, "edges": 10, "shard_size": 896, "has_map": true, "bounds": [0, 0, 80, 30], "day0": 20683, "today_number": 1, "days_ahead": 100000, "compass_days": 100000}
