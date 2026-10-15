@@ -368,7 +368,7 @@ one container and ~1.8 GB of data (attached to the GitHub release; CC BY-SA
 
 ```bash
 gh release download v1.0.0 --pattern '*.parquet' --dir data
-docker run -d -p 8080:8080 -v ./data:/data:ro ghcr.io/nirbhayagga/wikigolf:latest
+docker run -d -p 8080:8080 -v ./data:/data:ro -v wikigolf-state:/state ghcr.io/nirbhayagga/wikigolf:latest
 # ~7 GB RAM, ~2 minutes to load, then http://localhost:8080
 ```
 
