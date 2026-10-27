@@ -345,7 +345,7 @@ Wordle-style share grid; a 3- or 9-hole **round** with one scorecard; random
 races drawn from precomputed **pools** with route-count-aware difficulty; a
 rationed exact-distance **compass**; title+alias **search** (sub-ms); links
 annotated with categories, short descriptions, read counts and infobox
-glyphs; and the force-layout **map** with the race drawn across it.
+glyphs; and the optional **Explore** view with the sampled force-layout map.
 
 Measured at full enwiki scale: **7.1 GB resident** (~2 min to load; the
 title+alias search index is the largest optional slice — `--no-alias-search`
@@ -413,8 +413,8 @@ cargo run --release --bin static_export -- --data data --out static_site
 
 Host it free on Cloudflare Pages (`wrangler pages deploy static_site`), put a
 domain on it, done: ~$10/year total. What the files cannot answer is hidden
-rather than broken: custom-pair races, the compass and leaderboards need the
-live server. Dailies are pre-generated a year ahead by default (each costs
+rather than broken: custom-pair races and leaderboards need the live server
+(the static compass is the precomputed lite version). Dailies are pre-generated a year ahead by default (each costs
 ~2 KB; `--days 3650` buys a decade) and advance on the visitor's clock; past
 the horizon the page says the build needs a re-export.
 
