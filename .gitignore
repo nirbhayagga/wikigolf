@@ -31,8 +31,7 @@ cufile.log
 # Conversation transcripts dropped in the repo root by /export. Date-prefixed
 # and root-scoped so python/requirements.txt is not caught by it.
 /20??-??-??-*.txt
-!CLAUDE.md
-# Hand-written reference, same standing as README and CLAUDE. The *.md rule
+# Hand-written reference, same standing as README. The *.md rule
 # above exists for generated audits, not for docs that are part of the project.
 !CODEBASE.md
 
